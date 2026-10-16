@@ -1,6 +1,7 @@
 # sovereign-agents: the design
 
-A draft for the founders, 16 October 2026. Nothing here is built yet. Once you approve it, a plan breaks it into tasks.
+A draft for the founders, 16 October 2026, with their two answers recorded at the end. Nothing here is built yet.
+Once the founders approve it, a plan breaks it into tasks.
 
 ## What it is
 
@@ -71,7 +72,7 @@ kit/                the parts every job shares
   gates.py          provenance and approval checks the executor runs before anything happens
   fence.py          third-party text as data (from commerce-agents, licence header kept)
   receipts.py       signs with verifiable-receipts (Python), checks with its verifiers
-  approvals.py      the owner's yes and no: a terminal prompt first, the chosen channel next
+  approvals.py      the owner's yes and no: a terminal prompt first, a WhatsApp link to an approval page next
 connectors/         one interface per kind of system, each with a sample backend
   mailbox.py  calendar.py  shop.py  reviews.py
 jobs/
@@ -161,9 +162,14 @@ nothing about the law.
 Hosting for a client, the real connectors (Gmail, Google Calendar, the Shopify Admin API, Google Business Profile),
 billing, and a dashboard. They come after the first version works end to end on the samples.
 
-## Questions for the founders
+## The founders' answers
 
-1. **Where does the owner say yes, once there's a real client?** The first version uses a terminal prompt.
-   Recommended next step: a WhatsApp message with a link to an approval page that shows the change and records the yes.
-   The other options are email, or a small web inbox.
-2. **The page's demos: recorded real runs, checked in the browser (recommended), or a scripted animation?**
+1. **Where the owner says yes, once there's a real client:** "WhatsApp link (Recommended)" (the founders, 16 October
+   2026).
+   - The owner gets a WhatsApp message with a link to a small approval page.
+   - The page shows exactly what will be sent or ordered, and records the yes or no.
+   - The approval itself is signed, so the receipt for the action can point at the yes that allowed it.
+   - The first version still uses a terminal prompt for our own testing. The WhatsApp channel comes with the first
+     client.
+2. **The page's demos:** "Recorded real runs (Recommended)" (the founders, 16 October 2026), as described in "The
+   demos on the studio page" above.
