@@ -49,8 +49,8 @@ It is the code behind the studio's line "One agent, one job, one week".
      (`examples/max_budget_usd.py`). We set it with that margin in mind.
    - Per day: the SDK has no cap across runs, so the kit adds up `total_cost_usd` from each run in its ledger and will
      not start a run that the day's cap cannot cover.
-   - Outside the code: each deployment's API key lives in its own Claude Console workspace, with that workspace's
-     spend limit as the outer wall.
+   - Outside the code: each deployment's API key comes from a workspace in the client's own Claude Console account,
+     with that workspace's spend limit as the outer wall (see "Who pays for Claude" below).
 6. **Every action leaves a signed receipt.**
    - Each applied action, and each run (its cost, the tools it called, what it staged, how it ended), is signed in the
      verifiable-receipts v2 format with the business's Ed25519 key.
@@ -119,6 +119,26 @@ until they do.
 its caps, or to "Never". The yes is then given once, in advance; the action is still capped and still signed. These are
 the three levels of commerce-agents' Managed Agents setup (`agent.yaml:36-110`: `always_allow`, `always_ask`, not
 enabled).
+
+## Who pays for Claude
+
+The client does, directly, on their own Anthropic account at Anthropic's prices; the studio adds no markup (the
+founders, 16 October 2026, `Sovereign-Matrix-/docs/decisions.md`).
+
+- **An API key, never a subscription.** Anthropic's Agent SDK page: "Unless previously approved, Anthropic does not
+  allow third party developers to offer claude.ai login or rate limits for their products, including agents built on
+  the Claude Agent SDK. Use the API key authentication methods described in the Quickstart instead."
+  (code.claude.com/docs/en/agent-sdk/overview, read 16 October 2026). A client's Claude plan can't run the agent.
+- **Set up in the build week, with the client.** The client's Console account, one workspace for the agent, a spend
+  limit on that workspace, and one key from it. The key goes straight into the host's secret store; it is never sent
+  in chat, email or WhatsApp, and never reaches the model's context.
+- **The caps line up.** The per-run and per-day caps in the code sit inside the workspace's spend limit, so the
+  workspace limit is only ever the last wall.
+- **No Claude Code on the client's side.** The Agent SDK is "a library that runs the Claude Code binary" (same page),
+  and that runs inside our host. The product is never called "Claude Code" or "Claude Code Agent", which the same page
+  does not permit; "{name} Powered by Claude" is allowed.
+- **Managed Agents** is billed through the same Claude API account; its own pricing is checked from Anthropic's pages
+  before the engine is chosen for a job.
 
 ## The demos on the studio page
 
