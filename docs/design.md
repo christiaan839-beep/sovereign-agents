@@ -116,7 +116,9 @@ until they do.
 | Review replies | new reviews | a reply in the owner's voice | no offer of money or discounts unless the owner set a rule; a review of 1 or 2 stars always waits for the owner |
 
 **Autonomy.** Every action type starts at "Your yes". The owner can later move one action type to "Automatic" within
-its caps, or to "Never". The yes is then given once, in advance; the action is still capped and still signed. These are
+its caps, or to "Never". The yes is then given once, in advance; the action is still capped and still signed. An
+action type may move to "Automatic" only after two full weeks of it with no mistakes, and two mistakes of the same
+kind move it back to "Your yes" (the founders, 16 October 2026: "2 weeks, no strikes"). These are
 the three levels of commerce-agents' Managed Agents setup (`agent.yaml:36-110`: `always_allow`, `always_ask`, not
 enabled).
 
@@ -129,8 +131,9 @@ founders, 16 October 2026, `Sovereign-Matrix-/docs/decisions.md`).
   allow third party developers to offer claude.ai login or rate limits for their products, including agents built on
   the Claude Agent SDK. Use the API key authentication methods described in the Quickstart instead."
   (code.claude.com/docs/en/agent-sdk/overview, read 16 October 2026). A client's Claude plan can't run the agent.
-- **Set up in the build week, with the client.** The client's Console account, one workspace for the agent, a spend
-  limit on that workspace, and one key from it. The key goes straight into the host's secret store; it is never sent
+- **Set up in the build week, with the client.** The client's Console account, one workspace for the agent (not the
+  Default Workspace: "You cannot set limits on the Default Workspace", platform.claude.com/docs/en/manage-claude/workspaces,
+  read 16 October 2026), a monthly spend limit and an alert on that workspace, and one key scoped to it. The key goes straight into the host's secret store; it is never sent
   in chat, email or WhatsApp, and never reaches the model's context.
 - **The caps line up.** The per-run and per-day caps in the code sit inside the workspace's spend limit, so the
   workspace limit is only ever the last wall.
