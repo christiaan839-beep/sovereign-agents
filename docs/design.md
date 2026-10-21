@@ -15,8 +15,10 @@ It is the code behind the studio's line "One agent, one job, one week".
 ## The calls it rests on
 
 - The four jobs: "Supplier inbox + reorders, Bookings + no-show reminders, Shopify orders + follow-ups, Review
-  replies" (the founders, 16 October 2026, `Sovereign-Matrix-/docs/decisions.md`).
-- Its own private repo: "New private repo (Recommended)" (the founders, 16 October 2026).
+  replies" (the founders, 16 October 2026, in the studio's decision log).
+- Its own repo: "New private repo (Recommended)" (the founders, 16 October 2026). On 21 October 2026 the founders
+  chose "Open-source the kit", so a client can keep running their agent after they leave: it runs on their host, with
+  their signing key in their own secret store (`docs/open-source-release.md`).
 - Our own work is the proof until a client result can be shown: each job gets a working demo with a made-up business,
   labelled as a sample, every action signed and checkable, nothing sent without the owner's yes (same entry).
 - New keys only: "use only new keys" (the founders, 16 October 2026). No key from sovereign-v2 or anywhere else is
@@ -125,7 +127,7 @@ enabled).
 ## Who pays for Claude
 
 The client does, directly, on their own Anthropic account at Anthropic's prices; the studio adds no markup (the
-founders, 16 October 2026, `Sovereign-Matrix-/docs/decisions.md`).
+founders, 16 October 2026, in the studio's decision log).
 
 - **An API key, never a subscription.** Anthropic's Agent SDK page: "Unless previously approved, Anthropic does not
   allow third party developers to offer claude.ai login or rate limits for their products, including agents built on
@@ -178,7 +180,7 @@ nothing about the law.
 |---|---|---|
 | Claude Agent SDK for Python | MIT | the runtime, as a dependency |
 | commerce-agents | Apache-2.0 | the fence, the ledger and gate patterns; copied files keep their `Copyright 2026 Anthropic PBC` and SPDX headers, are marked as changed, and the licence ships in `third_party/commerce-agents/` |
-| verifiable-receipts (ours) | Apache-2.0 | signing and checking; its Python package gains a signer in a pull request under way now |
+| verifiable-receipts (ours) | Apache-2.0 | signing and checking; its Python package signs and verifies v2 receipts |
 
 ## Not in the first version
 

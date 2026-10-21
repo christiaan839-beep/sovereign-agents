@@ -3161,6 +3161,7 @@ Expected:
 ```
 
 The diff shows exactly the documented change: the note added, the chip helpers and their import removed.
+The lines marked `<` above are commerce-agents' code, Copyright 2026 Anthropic PBC, under the Apache License, Version 2.0 (licence in `third_party/commerce-agents/LICENSE`; see `NOTICE`).
 
 In `pyproject.toml`, replace:
 

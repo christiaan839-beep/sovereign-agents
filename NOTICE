@@ -1,0 +1,14 @@
+sovereign-agents
+Copyright 2026 Christiaan de Wet / Sovereign Matrix
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE).
+
+This product includes material from commerce-agents
+(https://github.com/anthropics/commerce-agents, commit fd4d592),
+Copyright 2026 Anthropic PBC, licensed under the Apache License, Version 2.0
+(third_party/commerce-agents/LICENSE):
+- excerpts of commerce-common/commerce_common/fencing.py, quoted in
+  docs/plans/2026-10-16-kit-1-core-and-supplier-reorders.md (Task 4, Step 3);
+- the wording of the fence notice in
+  merchant-agent/core/merchant_agent/fencing.py, adapted in the same plan
+  (Task 11).
