@@ -1,7 +1,7 @@
 # sovereign-agents
 
-Private. Sovereign Matrix's agent kit: one Claude agent for one small-business job. The agent proposes, the owner
-says yes, then the kit acts, and every action leaves a signed receipt.
+Sovereign Matrix's agent kit: one Claude agent for one small-business job. The agent proposes, the owner says yes,
+then the kit acts, and every action leaves a signed receipt.
 
 Version 1 does the first job the design names, supplier inbox + reorders, on a made-up sample business. The design is
 in [`docs/design.md`](docs/design.md) and the build plan in [`docs/plans/`](docs/plans/).
