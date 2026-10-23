@@ -25,5 +25,7 @@ the kit acts and signs a receipt. Read `docs/design.md` first. The founders' cal
 
 ## How to build and check
 
-Nothing is built yet: the design is in review. The checks the first version will run are `ruff check`, `ruff format
---check`, `mypy` and `pytest`, plus every test receipt checked with the receipts library's verifiers.
+Version 1 is built: the kit and the supplier inbox + reorders job, on the sample bakery. Set up with `uv sync --locked`,
+then run the checks CI runs: `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`, `uv run pytest -q
+--cov --cov-branch` (90% overall) and `uv run python scripts/check_coverage.py` (the ledger, gates and receipts at
+100%). The tests check every receipt they leave with the receipts library's verifiers.
