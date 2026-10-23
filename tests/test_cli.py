@@ -110,7 +110,32 @@ def test_run_needs_a_known_job_and_keys(tmp_path: Path) -> None:
     args = ["run", "--business", SAMPLE, "--job", "supplier_reorders", "--samples", str(SAMPLES)]
     code, _, err = run_cli(args, tmp_path, ScriptedEngine([]))
     assert code == 2
-    assert "no key at" in err
+    assert f"{SAMPLE} has no signing key" in err
+    assert f"sovereign-agents keys new --business {SAMPLE}" in err
+
+
+def test_a_run_the_day_cap_cannot_cover_says_what_to_do(tmp_path: Path) -> None:
+    run_cli(["keys", "new", "--business", SAMPLE], tmp_path)
+    out, err = io.StringIO(), io.StringIO()
+    args = ["run", "--business", SAMPLE, "--job", "supplier_reorders", "--samples", str(SAMPLES)]
+    env = {
+        "SOVEREIGN_AGENTS_HOME": str(tmp_path),
+        "SOVEREIGN_AGENTS_DAY_CAP_MICROS": "750000",
+    }
+    engine = ScriptedEngine([], cost_micros=1)
+    assert main(args, env=env, out=out, err=err, clock=FixedClock(T0), engine=lambda _: engine) == 0
+    code = main(args, env=env, out=out, err=err, clock=FixedClock(T0), engine=lambda _: engine)
+    assert code == 2
+    message = err.getvalue()
+    assert "nothing was run: $0.000001 of the day's cap of $0.750000" in message
+    assert "raise SOVEREIGN_AGENTS_DAY_CAP_MICROS" in message
+
+
+def test_receipts_verify_without_a_public_key_says_how_to_make_one(tmp_path: Path) -> None:
+    code, _, err = run_cli(["receipts", "verify", "--business", SAMPLE], tmp_path)
+    assert code == 2
+    assert f"{SAMPLE} has no public key" in err
+    assert f"sovereign-agents keys new --business {SAMPLE}" in err
 
 
 def test_run_on_the_sdk_engine_needs_an_api_key(tmp_path: Path) -> None:

@@ -11,7 +11,6 @@ from jsonschema.exceptions import SchemaError
 
 from sovereign_agents.kit.clock import FixedClock
 from sovereign_agents.kit.gates import INPUT, PROVENANCE, TOOLS, Refusal
-from sovereign_agents.kit.hosted import HostedEndpoint, HostedToolServer
 from sovereign_agents.kit.job import RunContext
 from sovereign_agents.kit.ledger import Ledger
 from sovereign_agents.kit.tools import ToolResult, ToolSet, ToolSpec
@@ -88,47 +87,6 @@ def test_a_broken_schema_is_refused() -> None:
     broken = ToolSpec("bad", "Bad.", {"type": "nothing"}, "read", echo)
     with pytest.raises(SchemaError):
         ToolSet("demo", (broken,))
-
-
-class InMemoryHostedServer:
-    """Stands in for plan 2's HTTPS server: it dispatches through ToolSet.call and nothing else."""
-
-    def __init__(self) -> None:
-        self.open_runs: dict[str, ToolSet] = {}
-
-    async def open(self, tools: ToolSet, *, run_id: str) -> HostedEndpoint:
-        self.open_runs[run_id] = tools
-        return HostedEndpoint(run_id=run_id, url=f"https://host.example/runs/{run_id}/mcp")
-
-    async def close(self, run_id: str) -> None:
-        self.open_runs.pop(run_id, None)
-
-    async def handle(self, run_id: str, name: str, arguments: dict[str, Any]) -> ToolResult:
-        tools = self.open_runs.get(run_id)
-        if tools is None:
-            return ToolResult("this run is closed", is_error=True)
-        return await tools.call(name, arguments)
-
-
-def test_the_hosted_interface_serves_the_same_tool_set() -> None:
-    hosted = InMemoryHostedServer()
-    server: HostedToolServer = hosted
-
-    async def scenario() -> list[ToolResult]:
-        endpoint = await server.open(tool_set(), run_id="run-1")
-        assert endpoint.url.startswith("https://")
-        results = [
-            await hosted.handle("run-1", "echo", {"word": "hi"}),
-            await hosted.handle("run-1", "apply_change", {}),
-        ]
-        await server.close("run-1")
-        results.append(await hosted.handle("run-1", "echo", {"word": "hi"}))
-        return results
-
-    served, off_list, closed = asyncio.run(scenario())
-    assert served == ToolResult("echo hi")
-    assert off_list.is_error
-    assert closed.is_error
 
 
 def test_a_run_context_records_refusals_in_the_ledger(tmp_path: Path) -> None:

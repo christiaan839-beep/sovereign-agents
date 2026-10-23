@@ -40,6 +40,11 @@ class Suppliers(Protocol):
     def place_order(self, order: PurchaseOrder) -> str: ...
 
 
+def suppliers_by_id(suppliers: Suppliers) -> dict[str, Supplier]:
+    """The known suppliers, by ``supplier_id``."""
+    return {supplier.supplier_id: supplier for supplier in suppliers.list_suppliers()}
+
+
 class SampleSuppliers:
     """Reads ``suppliers.json``; placing an order writes to the outbox's ``orders.jsonl``."""
 

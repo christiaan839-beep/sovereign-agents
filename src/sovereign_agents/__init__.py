@@ -4,4 +4,6 @@ The agent reads and stages. The owner says yes or no. Only then does the host ap
 change through a connector and sign a receipt with the business's own key.
 """
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("sovereign-agents")

@@ -1,7 +1,8 @@
 # sovereign-agents: the design
 
-A draft for the founders, 16 October 2026, with their two answers recorded at the end. Nothing here is built yet.
-Once the founders approve it, a plan breaks it into tasks.
+Written for the founders on 16 October 2026, with their two answers recorded at the end. Version 1 is built from it:
+the kit and the supplier inbox + reorders job, on the sample bakery (the plan is in `docs/plans/`). "The shape" below
+marks what version 1 holds. Where this design and the code disagree, the code is right.
 
 ## What it is
 
@@ -57,7 +58,9 @@ It is the code behind the studio's line "One agent, one job, one week".
    - Amounts are whole cents, never floats, so the signed text is byte-for-byte the same in Python, Go and JavaScript.
 7. **Keys are new and stay where they belong.**
    - `sovereign-agents keys new` makes each business its own Ed25519 key pair.
-   - The private key lives in the host's secret store, never in the repo, a log or the model's context.
+   - The private key never goes in the repo, a log or the model's context. The hosted version keeps it in the host's
+     secret store; version 1 keeps it in a mode-600 file under `SOVEREIGN_AGENTS_HOME`, and refuses to write one
+     inside a git work tree.
    - The public key is published at `/.well-known/sovereign-receipts/ed25519.pem`, the place the receipts spec names.
    - Service credentials (mailbox, calendar, shop, reviews) are read at the edge, by the connector, and the model never
      sees them.
@@ -66,22 +69,31 @@ It is the code behind the studio's line "One agent, one job, one week".
 ## The shape
 
 ```
-kit/                the parts every job shares
-  runner.py         builds the SDK options for a job and runs it under the caps
-  ledger.py         SQLite: staged changes, approvals, applied actions, receipts, spend per day
-  gates.py          provenance and approval checks the executor runs before anything happens
+kit/                the trust core every job shares, with no business specifics
+  runner.py         starts a run inside the day's cap, hands it to an engine, signs its run receipt
+  engine.py         the Engine interface; the engines themselves live outside the kit
+  tools.py          a job's read and stage tools, served the same way by every engine
+  guard.py          the check every tool call meets before it runs
+  ledger.py         SQLite: runs, spend per day, staged changes, approvals, refusals, flags, receipts
+  gates.py          the input, provenance, caps, expiry, approval and tools gates
   fence.py          third-party text as data (from commerce-agents, licence header kept)
-  receipts.py       signs with verifiable-receipts (Python), checks with its verifiers
-  approvals.py      the owner's yes and no: a terminal prompt first, a WhatsApp link to an approval page next
+  receipts.py       each business's keys; signs with verifiable-receipts, checks with its verifiers
+  approvals.py      records the owner's yes or no from a host channel, and runs the apply pass
+  testing/          receipt checks in Python and Go, a scripted engine, the hostile emails
+engines/            agent_sdk.py (the Claude Agent SDK, in process) and fake_model.py (no model)
 connectors/         one interface per kind of system, each with a sample backend
-  mailbox.py  calendar.py  shop.py  reviews.py
+  mailbox.py  stock.py  suppliers.py         version 1
+  calendar.py  shop.py  reviews.py           not built yet
 jobs/
-  supplier_reorders/  bookings_reminders/  order_followups/  review_replies/
+  supplier_reorders/                         version 1
+  bookings_reminders/  order_followups/  review_replies/    not built yet
     prompt.md         what the job is, in the owner's terms
     tools.py          read tools and stage tools; no apply tool
     caps.py           the job's limits
-samples/            four made-up businesses, labelled as samples
-demo/               recorded runs for the studio page
+    apply.py          the host's applier, run only after the owner's yes
+cli.py              the sovereign-agents command; in version 1 the owner answers in its terminal prompt
+samples/            made-up businesses, labelled as samples; version 1 has sample-bakery
+demo/               recorded runs for the studio page; not built yet
 tests/  evals/
 ```
 
@@ -98,10 +110,10 @@ Guardrails run again at apply time against the caps in force then, as commerce-a
 1. The host starts the job, inside the day's cap.
 2. The agent reads through the job's read tools. What it reads is fenced.
 3. The agent stages changes through the job's stage tools. Each staged change is checked against the gates and the caps.
-4. The run ends. The kit signs a run receipt and sends the owner the staged changes.
+4. The run ends. The kit signs a run receipt, and the staged changes wait for the owner.
 5. The owner says yes or no to each one. Nothing is sent before then.
-6. On a yes, the host re-checks the caps and the expiry, applies the change through the connector, and signs a receipt
-   for the action.
+6. On a yes, the host re-checks the expiry, the approval and the caps, claims the change, applies it through the
+   connector, and signs a receipt for the action.
 
 ## The four jobs
 

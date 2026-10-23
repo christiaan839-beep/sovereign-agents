@@ -3,8 +3,8 @@
 #
 # Changed by Sovereign Matrix, 16 October 2026: copied from commerce-agents (commit fd4d592),
 # commerce-common/commerce_common/fencing.py, licence in third_party/commerce-agents/LICENSE.
-# Kept: Fence, the patterns it uses, MAX_FENCED_CHARS, sanitize_label and truncate_display,
-# unchanged. Removed: the suggestion-chip helpers and the Sequence import they used.
+# Kept: Fence, the patterns it uses, MAX_FENCED_CHARS and sanitize_label, unchanged.
+# Removed: the suggestion-chip helpers and the Sequence import they used, and truncate_display.
 
 """Sanitizing and fencing text the model reads as data. Each role defines one ``Fence``;
 its label is a source literal, never built from runtime values, so untrusted text cannot
@@ -163,13 +163,3 @@ def sanitize_label(text: Any, max_chars: int) -> str:
     if len(line) > max_chars:
         line = line[: max_chars - 1].rstrip() + "…"
     return line
-
-
-def truncate_display(text: str, max_chars: int) -> str:
-    """Text shown to a person, cut at a word boundary with an ellipsis."""
-    if len(text) <= max_chars:
-        return text
-    cut = text[: max_chars - 1]
-    if " " in cut:
-        cut = cut[: cut.rindex(" ")]
-    return cut.rstrip(" ,;:-—–") + "…"

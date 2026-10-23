@@ -37,7 +37,7 @@ def test_the_mailbox_reads_messages(tmp_path: Path) -> None:
     assert mailbox.get_message("msg-999") is None
 
 
-def test_stock_and_suppliers(tmp_path: Path) -> None:
+def test_the_sample_stock_and_suppliers_are_read(tmp_path: Path) -> None:
     business = sample_business(tmp_path)
     levels = {level.sku: level for level in business.stock.levels()}
     assert levels["FLR-WHITE-25"].on_hand == 3
