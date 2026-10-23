@@ -1,0 +1,8 @@
+{
+  "items": [
+    {"sku": "FLR-WHITE-25", "name": "White bread flour, 25 kg bag", "on_hand": 3, "reorder_point": 6},
+    {"sku": "FLR-WHOLE-25", "name": "Wholewheat flour, 25 kg bag", "on_hand": 5, "reorder_point": 4},
+    {"sku": "BTR-UNSALTED-5", "name": "Unsalted butter, 5 kg block", "on_hand": 1, "reorder_point": 3},
+    {"sku": "BOX-CAKE-25", "name": "Cake boxes, pack of 25", "on_hand": 12, "reorder_point": 10}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "suppliers": [
+    {
+      "supplier_id": "sup-flour",
+      "name": "Sample Flour Mill",
+      "email": "orders@flour-mill.example",
+      "skus": ["FLR-WHITE-25", "FLR-WHOLE-25"]
+    },
+    {
+      "supplier_id": "sup-dairy",
+      "name": "Sample Dairy",
+      "email": "orders@dairy.example",
+      "skus": ["BTR-UNSALTED-5"]
+    },
+    {
+      "supplier_id": "sup-pack",
+      "name": "Sample Packaging",
+      "email": "sales@packaging.example",
+      "skus": ["BOX-CAKE-25"]
+    }
+  ]
+}

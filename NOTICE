@@ -1,0 +1,7 @@
+sovereign-agents
+Copyright 2026 Christiaan de Wet / Sovereign Matrix
+
+This product includes software from commerce-agents
+(src/sovereign_agents/kit/fence.py, and the notice wording in
+src/sovereign_agents/jobs/supplier_reorders/tools.py), Copyright 2026 Anthropic PBC,
+licensed under the Apache License, Version 2.0 (third_party/commerce-agents/LICENSE).

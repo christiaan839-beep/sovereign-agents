@@ -1,0 +1,7 @@
+{
+  "slug": "sample-bakery",
+  "name": "Sample Bakery",
+  "sample": true,
+  "currency": "ZAR",
+  "about": "A made-up business for tests and demos. No real business, person, brand or place appears in it."
+}
