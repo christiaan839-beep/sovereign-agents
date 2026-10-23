@@ -15,14 +15,17 @@ from claude_agent_sdk import ClaudeSDKError
 
 from sovereign_agents.kit import (
     PRIVATE_KEY_FILE,
+    PUBLIC_KEY_FILE,
     TERMINAL,
     ChangeExpired,
     Clock,
+    DayCapReached,
     Engine,
     KeyFileError,
     Ledger,
     LedgerError,
     Runner,
+    Signer,
     SystemClock,
     apply_approved,
     check_slug,
@@ -42,8 +45,8 @@ from .engines.agent_sdk import AgentSdkEngine
 from .engines.fake_model import FakeModelEngine, load_fake_calls
 from .jobs import JOBS
 
-AGENT_SDK = "agent-sdk"
-FAKE_MODEL = "fake-model"
+AGENT_SDK = AgentSdkEngine.name
+FAKE_MODEL = FakeModelEngine.name
 
 
 def sdk_engine(config: KitConfig) -> Engine:
@@ -72,6 +75,24 @@ def _business(args: argparse.Namespace, ctx: Context) -> Business:
     return load_sample_business(Path(args.samples), slug, ctx.config.home.outbox_dir(slug))
 
 
+def _sample_label(business: Business) -> str:
+    return " (sample)" if business.sample else ""
+
+
+def _has_keys(business: str, ctx: Context) -> bool:
+    return (ctx.config.home.keys_dir(business) / PRIVATE_KEY_FILE).exists()
+
+
+def _signer(business: str, ctx: Context) -> Signer:
+    keys_dir = ctx.config.home.keys_dir(business)
+    if not _has_keys(business, ctx):
+        raise CliError(
+            f"{business} has no signing key in {keys_dir}; make one with: "
+            f"sovereign-agents keys new --business {business}"
+        )
+    return load_signer(business, keys_dir)
+
+
 def _ledger(ctx: Context) -> Ledger:
     ctx.config.home.root.mkdir(parents=True, exist_ok=True)
     return Ledger(ctx.config.home.ledger_path)
@@ -95,7 +116,7 @@ def _run(args: argparse.Namespace, ctx: Context) -> int:
     if spec is None:
         raise CliError(f"no job {args.job!r}; the jobs are: {', '.join(sorted(JOBS))}")
     business = _business(args, ctx)
-    signer = load_signer(business.slug, ctx.config.home.keys_dir(business.slug))
+    signer = _signer(business.slug, ctx)
     if args.engine == FAKE_MODEL:
         # Every business v1 loads is a sample (load_sample_business refuses any other), and
         # the fake model's calls live in the sample's own folder.
@@ -114,13 +135,22 @@ def _run(args: argparse.Namespace, ctx: Context) -> int:
             budget=ctx.config.budget,
             engine=engine,
         )
-        run_ctx = runner.begin(spec.name, sample=business.sample)
+        try:
+            run_ctx = runner.begin(spec.name, sample=business.sample)
+        except DayCapReached as exc:
+            budget = ctx.config.budget
+            raise CliError(
+                f"nothing was run: {format_micros(exc.committed_micros)} of the day's cap of "
+                f"{format_micros(exc.cap_micros)} is spent or held by open runs, and a run "
+                f"holds {format_micros(budget.reserve_micros)}. The day starts again at "
+                "00:00 UTC; to allow more today, raise SOVEREIGN_AGENTS_DAY_CAP_MICROS."
+            ) from exc
         result = asyncio.run(runner.run(run_ctx, spec.build(run_ctx, business)))
     finally:
         ledger.close()
-    label = " (sample)" if business.sample else ""
     lines = [
-        f"Run {result.run_id} for {business.slug}{label}, {spec.name}: {result.outcome}",
+        f"Run {result.run_id} for {business.slug}{_sample_label(business)}, {spec.name}: "
+        f"{result.outcome}",
         f"Cost: {format_micros(result.cost_micros)} in {result.duration_ms} ms",
         f"Staged: {', '.join(result.staged) or 'nothing'}",
         f"Flagged for the owner: {', '.join(result.flags) or 'nothing'}",
@@ -134,7 +164,7 @@ def _run(args: argparse.Namespace, ctx: Context) -> int:
 
 def _approve(args: argparse.Namespace, ctx: Context) -> int:
     business = _business(args, ctx)
-    signer = load_signer(business.slug, ctx.config.home.keys_dir(business.slug))
+    signer = _signer(business.slug, ctx)
     say = ctx.out.write
     ledger = _ledger(ctx)
     try:
@@ -148,8 +178,7 @@ def _approve(args: argparse.Namespace, ctx: Context) -> int:
         if not changes:
             say("Nothing waits for your yes.\n")
         for change in changes:
-            label = " (sample)" if business.sample else ""
-            say(f"\n{change.change_id}{label}, until {iso(change.expires_at)}\n")
+            say(f"\n{change.change_id}{_sample_label(business)}, until {iso(change.expires_at)}\n")
             say(f"{change.summary}\n")
             answer = ctx.ask("Yes, do this? [y/N] ").strip().lower()
             try:
@@ -189,7 +218,13 @@ def _approve(args: argparse.Namespace, ctx: Context) -> int:
 
 def _receipts_verify(args: argparse.Namespace, ctx: Context) -> int:
     business = check_slug(args.business)
-    public = load_public_pem(ctx.config.home.keys_dir(business))
+    keys_dir = ctx.config.home.keys_dir(business)
+    if not (keys_dir / PUBLIC_KEY_FILE).is_file():
+        raise CliError(
+            f"{business} has no public key in {keys_dir}, so its receipts cannot be checked; "
+            f"its key pair is made with: sovereign-agents keys new --business {business}"
+        )
+    public = load_public_pem(keys_dir)
     ledger = _ledger(ctx)
     try:
         results = verify_all(ledger, business, public)
@@ -209,7 +244,7 @@ def _demo(args: argparse.Namespace, ctx: Context) -> int:
     owner's yes or no in this terminal, the apply pass, and a check of every receipt."""
     business = check_slug(args.business)
     say = ctx.out.write
-    if not (ctx.config.home.keys_dir(business) / PRIVATE_KEY_FILE).exists():
+    if not _has_keys(business, ctx):
         say("1. Keys\n")
         _keys_new(argparse.Namespace(business=business, dir=None), ctx)
     else:

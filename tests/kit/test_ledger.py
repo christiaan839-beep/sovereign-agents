@@ -156,7 +156,7 @@ def test_the_same_change_staged_twice_is_one_change(ledger: Ledger) -> None:
         ttl=TTL,
     )
     assert created
-    assert first.change_id == "chg-" + "b" * 16
+    assert first.change_id.startswith("chg-")
     assert first.status == "staged"
     assert first.expires_at == T0 + TTL
     assert first.payload == {"lines": [{"sku": "S1", "quantity": 2}], "totalCents": 77_000}
@@ -173,6 +173,37 @@ def test_the_same_change_staged_twice_is_one_change(ledger: Ledger) -> None:
     )
     assert not created_again
     assert again == first
+
+
+def test_two_businesses_may_stage_under_the_same_key(ledger: Ledger) -> None:
+    """The key is unique per business, so the change id must not be made from the key alone."""
+    start(ledger)
+    ledger.begin_run(
+        run_id="run-2",
+        business="other-biz",
+        job="job",
+        kind="agent",
+        engine="test-engine",
+        now=T0,
+        reserve_micros=0,
+        day_cap_micros=None,
+    )
+    ours = stage(ledger, key="c" * 64)
+    theirs, created = ledger.stage_change(
+        run_id="run-2",
+        business="other-biz",
+        job="job",
+        kind="order",
+        idempotency_key="c" * 64,
+        payload={"totalCents": 1000},
+        summary="an order",
+        now=T0,
+        ttl=TTL,
+    )
+    assert created
+    assert theirs.change_id != ours
+    assert [c.change_id for c in ledger.changes("biz")] == [ours]
+    assert [c.change_id for c in ledger.changes("other-biz")] == [theirs.change_id]
 
 
 def test_a_payload_with_a_float_is_refused(ledger: Ledger) -> None:

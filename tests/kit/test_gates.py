@@ -78,14 +78,14 @@ def test_provenance_cleans_ids_before_quoting_them() -> None:
     assert "​" not in refusal.reason
 
 
-def test_caps() -> None:
+def test_caps_pass_with_no_violation_and_list_every_one_otherwise() -> None:
     assert check_caps([]) is None
     assert check_caps(["too many lines", "over the cap"]) == Refusal(
         CAPS, "too many lines; over the cap"
     )
 
 
-def test_expiry() -> None:
+def test_expiry_refuses_from_the_moment_a_change_expires() -> None:
     assert check_expiry(CHANGE, T0) is None
     assert check_expiry(CHANGE, T0 + timedelta(hours=48)) == Refusal(
         EXPIRY, "change chg-1 expired at 2026-10-18T08:00:00Z"

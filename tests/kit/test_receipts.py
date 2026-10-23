@@ -109,7 +109,7 @@ def test_load_signer_works_without_the_public_file(tmp_path: Path) -> None:
     assert load_signer("example-shop", tmp_path).public_pem == expected
 
 
-def test_load_public_pem(tmp_path: Path) -> None:
+def test_the_public_key_loads_only_once_it_is_made(tmp_path: Path) -> None:
     with pytest.raises(KeyFileError, match="no public key"):
         load_public_pem(tmp_path)
     new_keys(tmp_path)

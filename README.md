@@ -34,12 +34,14 @@ cents and spend is whole micro-dollars, so a receipt canonicalises to the same b
 | `kit/receipts.py` | `new_keys`, the signer, `issue_receipt`, `verify`, `verify_all`. |
 | `kit/fence.py` | The fence for third-party text, copied from commerce-agents (see `NOTICE`). |
 | `kit/tools.py`, `kit/guard.py`, `kit/engine.py`, `kit/job.py` | The engine-neutral tool registry, the tool guard, the `Engine` interface, `Job` and `Applier`. |
+| `kit/clock.py`, `kit/money.py`, `kit/names.py` | Injected UTC time, model spend as whole micro-dollars, and the business slugs that go into paths and receipts. |
 | `kit/testing/` | Receipt checks (Python, and Go when `go` is on the path), a scripted engine, the hostile emails. |
 | `src/sovereign_agents/jobs/supplier_reorders/` | The job: `prompt.md`, the read and stage tools, the caps, and the host's applier. |
 | `src/sovereign_agents/connectors/` | The `Mailbox`, `Stock` and `Suppliers` interfaces, each with a sample backend that writes to a local outbox. |
 | `src/sovereign_agents/engines/agent_sdk.py` | The engine that runs a job on the Claude Agent SDK, in process. |
 | `src/sovereign_agents/engines/fake_model.py` | The same engine with a fake model that plays fixed tool calls: no network, no key, no cost. |
 | `src/sovereign_agents/cli.py` | The `sovereign-agents` command. |
+| `src/sovereign_agents/config.py`, `paths.py`, `formatting.py` | The settings read from the environment, where the kit keeps its state, and how amounts are written for the owner. |
 | `samples/sample-bakery/` | A made-up business, labelled as a sample, with the fake model's calls in `fake-model.json`. |
 | `tests/`, `tests/kit/`, `evals/` | Unit tests, the end-to-end loop, the attack suite, and the live smoke test. |
 

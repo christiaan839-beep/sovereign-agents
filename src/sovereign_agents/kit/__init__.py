@@ -15,7 +15,7 @@ from sovereign_matrix.verifiable_receipts import VerifyResult, canonicalize
 from .approvals import ApplyReport, apply_approved, decide, pending
 from .clock import Clock, FixedClock, SystemClock, day_key, iso, parse_iso
 from .engine import Engine, EngineRun
-from .fence import MAX_FENCED_CHARS, Fence, sanitize_label, truncate_display
+from .fence import MAX_FENCED_CHARS, Fence, sanitize_label
 from .gates import (
     APPROVAL,
     CAPS,
@@ -34,7 +34,6 @@ from .gates import (
     check_read,
 )
 from .guard import ToolCall, ToolGuard
-from .hosted import HostedEndpoint, HostedToolServer
 from .job import Applier, Job, RunContext
 from .ledger import (
     Approval,
@@ -69,8 +68,6 @@ from .receipts import (
 from .runner import RunBudget, Runner, RunResult, sign_run_receipt
 from .tools import ToolKind, ToolResult, ToolSet, ToolSpec
 
-__version__ = "0.1.0"
-
 __all__ = [
     "APPROVAL",
     "CAPS",
@@ -97,8 +94,6 @@ __all__ = [
     "Fence",
     "FixedClock",
     "Flag",
-    "HostedEndpoint",
-    "HostedToolServer",
     "Job",
     "KeyFileError",
     "Ledger",
@@ -144,7 +139,6 @@ __all__ = [
     "pending",
     "sanitize_label",
     "sign_run_receipt",
-    "truncate_display",
     "usd_to_micros",
     "verify",
     "verify_all",

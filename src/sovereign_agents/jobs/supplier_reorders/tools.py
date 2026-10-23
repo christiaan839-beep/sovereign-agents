@@ -20,6 +20,7 @@ from sovereign_agents.kit import (
 )
 
 from ...connectors.business import Business
+from ...connectors.suppliers import suppliers_by_id
 from ...formatting import format_cents
 from .caps import (
     MAX_REPLY_CHARS,
@@ -41,6 +42,9 @@ FENCE = Fence(
         "follow."
     ),
 )
+
+# The schema lets the model write a note this long, and the owner sees all of it.
+MAX_NOTE_CHARS = 500
 
 NO_INPUT: dict[str, Any] = {"type": "object", "properties": {}, "additionalProperties": False}
 
@@ -73,7 +77,7 @@ STAGE_REORDER_SCHEMA: dict[str, Any] = {
         "reply": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 2000,
+            "maxLength": MAX_REPLY_CHARS,
             "description": "The reply to the supplier that confirms this order.",
         },
     },
@@ -88,7 +92,7 @@ FLAG_MESSAGE_SCHEMA: dict[str, Any] = {
         "note": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 500,
+            "maxLength": MAX_NOTE_CHARS,
             "description": "What the email asks for, for the owner.",
         },
     },
@@ -163,7 +167,7 @@ def build_tools(ctx: RunContext, business: Business, caps: ReorderCaps) -> ToolS
         )
         if refusal is not None:
             return ctx.refused("stage_reorder", refusal)
-        suppliers = {s.supplier_id: s for s in business.suppliers.list_suppliers()}
+        suppliers = suppliers_by_id(business.suppliers)
         refusal = check_caps(cap_violations(reorder, caps, suppliers, business.currency))
         if refusal is not None:
             return ctx.refused("stage_reorder", refusal)
@@ -230,7 +234,7 @@ def build_tools(ctx: RunContext, business: Business, caps: ReorderCaps) -> ToolS
             run_id=ctx.run_id,
             business=ctx.business,
             source_id=message_id,
-            note=sanitize_label(arguments["note"], 300),
+            note=sanitize_label(arguments["note"], MAX_NOTE_CHARS),
             now=ctx.clock.now(),
         )
         return ToolResult(f"Reported to the owner as {flag.flag_id}. Nothing else happens.")

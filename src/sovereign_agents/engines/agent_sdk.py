@@ -182,7 +182,8 @@ class AgentSdkEngine:
         if not self._api_key_set:
             raise ApiKeyMissing(
                 "ANTHROPIC_API_KEY is not set; the kit runs only on the client's own API key, "
-                "never on a claude.ai login"
+                "never on a claude.ai login. Put the key from the client's agent workspace in "
+                "ANTHROPIC_API_KEY through the host's secret store"
             )
         self._config_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="run-", dir=self._config_root) as config_dir:

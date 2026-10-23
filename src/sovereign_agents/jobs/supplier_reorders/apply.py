@@ -9,7 +9,7 @@ from sovereign_agents.kit import Change
 
 from ...connectors.business import Business
 from ...connectors.mailbox import OutgoingMail
-from ...connectors.suppliers import OrderLine, PurchaseOrder
+from ...connectors.suppliers import OrderLine, PurchaseOrder, suppliers_by_id
 from .caps import Reorder, ReorderCaps, cap_violations
 
 
@@ -20,18 +20,17 @@ class ReorderApplier:
 
     def cap_violations(self, change: Change) -> list[str]:
         """The caps in force now, checked again at apply time."""
-        suppliers = {s.supplier_id: s for s in self.business.suppliers.list_suppliers()}
         reorder = Reorder.from_payload(change.payload)
+        suppliers = suppliers_by_id(self.business.suppliers)
         return cap_violations(reorder, self.caps, suppliers, self.business.currency)
 
     def apply(self, change: Change) -> dict[str, Any]:
-        """Place the order and send the reply, both to the supplier's known address only."""
+        """Place the order and send the reply, both to the supplier's known address only.
+
+        The host runs it only after ``cap_violations`` found the supplier among the known ones.
+        """
         reorder = Reorder.from_payload(change.payload)
-        supplier = next(
-            s
-            for s in self.business.suppliers.list_suppliers()
-            if s.supplier_id == reorder.supplier_id
-        )
+        supplier = suppliers_by_id(self.business.suppliers)[reorder.supplier_id]
         order_ref = self.business.suppliers.place_order(
             PurchaseOrder(
                 idempotency_key=change.idempotency_key,

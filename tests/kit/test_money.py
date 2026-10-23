@@ -31,7 +31,7 @@ def test_cost_must_be_a_number() -> None:
         usd_to_micros("0.5")  # type: ignore[arg-type]
 
 
-def test_budget_for_the_sdk() -> None:
+def test_a_budget_in_micro_dollars_becomes_us_dollars() -> None:
     assert micros_to_usd(500_000) == 0.5
 
 
@@ -41,6 +41,6 @@ def test_budget_must_be_positive_whole_micros(bad: int) -> None:
         micros_to_usd(bad)
 
 
-def test_format_micros() -> None:
+def test_micro_dollars_are_written_with_six_places() -> None:
     assert format_micros(12346) == "$0.012346"
     assert format_micros(3_000_000) == "$3.000000"

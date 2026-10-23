@@ -1,4 +1,4 @@
-"""Helpers the kit's tests share: the sample business and the job rig."""
+"""What the job's tests share: the sample bakery and a rig for the supplier reorders job."""
 
 from __future__ import annotations
 

@@ -26,10 +26,6 @@ def build_job(ctx: RunContext, business: Business, caps: ReorderCaps | None = No
     )
 
 
-def build_applier(business: Business) -> ReorderApplier:
-    return ReorderApplier(business)
+SPEC = JobSpec(name=NAME, build=build_job, applier=ReorderApplier)
 
-
-SPEC = JobSpec(name=NAME, build=build_job, applier=build_applier)
-
-__all__ = ["FENCE", "NAME", "PROMPT", "SPEC", "TASK", "build_applier", "build_job"]
+__all__ = ["FENCE", "NAME", "PROMPT", "SPEC", "TASK", "build_job"]

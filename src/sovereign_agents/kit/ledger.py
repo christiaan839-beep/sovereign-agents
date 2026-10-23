@@ -355,7 +355,7 @@ class Ledger:
                 (business, idempotency_key),
             ).fetchone()
             created = row is None
-            change_id = f"chg-{idempotency_key[:16]}" if created else str(row["change_id"])
+            change_id = new_id("chg") if created else str(row["change_id"])
             if created:
                 db.execute(
                     "INSERT INTO changes (change_id, business, job, run_id, kind, idempotency_key,"
