@@ -4,7 +4,7 @@
 import asyncio
 import json
 import sqlite3
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -20,7 +20,7 @@ from sovereign_agents.kit.ledger import Change, Ledger, PayloadTooDeep
 from sovereign_agents.kit.receipts import Signer, load_signer, new_keys
 from sovereign_agents.kit.runner import RunBudget, Runner
 from sovereign_agents.kit.testing import ScriptedCall, ScriptedEngine, assert_receipt_valid
-from tests.helpers import finishes_within
+from tests.helpers import finishes_within, refuse_receipt_writes
 from tests.kit.mail_job import MailApplier, Mailroom, OrderCaps, build_mail_job
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
@@ -333,15 +333,6 @@ def _store_payload(tmp_path: Path, change_id: str, payload: Any) -> None:
         )
 
 
-def _refuse_writes(tmp_path: Path, kind: str) -> None:
-    """Make the ledger file refuse every new receipt of ``kind``, as a full disk would."""
-    with closing(sqlite3.connect(tmp_path / "ledger.sqlite3")) as db, db:
-        db.execute(
-            f"CREATE TRIGGER no_{kind}_receipts BEFORE INSERT ON receipts"
-            f" WHEN NEW.kind = '{kind}' BEGIN SELECT RAISE(ABORT, 'disk full'); END"
-        )
-
-
 def test_a_payload_at_the_depth_allowance_stages_applies_and_signs(rig: Rig) -> None:
     # 63 deep as its own level 1, so 64 deep at level 2 of the action receipt: the limit.
     payload = {"deep": _nested(62)}
@@ -454,7 +445,7 @@ def test_a_result_the_receipt_cannot_carry_is_receipted_as_not_recorded(
 
 def test_a_failed_action_receipt_write_leaves_the_change_applying(rig: Rig, tmp_path: Path) -> None:
     change_id = _stage_deep(rig, {"deep": []})
-    _refuse_writes(tmp_path, "action")
+    refuse_receipt_writes(tmp_path / "ledger.sqlite3", "action")
     with pytest.raises(sqlite3.IntegrityError, match="disk full"):
         _apply_deep(rig, EchoApplier())
     assert rig.ledger.get_change(change_id).status == "applying"
@@ -467,7 +458,7 @@ def test_a_failed_action_receipt_write_leaves_the_change_applying(rig: Rig, tmp_
 
 def test_a_failed_run_receipt_write_leaves_the_run_open(rig: Rig, tmp_path: Path) -> None:
     # A run is marked ended only together with its signed run receipt.
-    _refuse_writes(tmp_path, "run")
+    refuse_receipt_writes(tmp_path / "ledger.sqlite3", "run")
     with pytest.raises(sqlite3.IntegrityError, match="disk full"):
         _apply_deep(rig, EchoApplier())
     with closing(sqlite3.connect(tmp_path / "ledger.sqlite3")) as db:
@@ -515,3 +506,30 @@ def test_two_passes_that_refuse_a_change_record_one_refusal(rig: Rig, tmp_path: 
     refusals = rig.ledger.refusals(run_id=second.run_id) + rig.ledger.refusals(run_id=first.run_id)
     assert [r.change_id for r in refusals] == [change_id]
     assert_receipt_valid(first.receipt, rig.signer.public_pem)
+
+
+class ChangingMapping(Mapping[str, Any]):
+    """A mapping that is not a dict, and gives a float from its second read on."""
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def __getitem__(self, key: str) -> Any:
+        self.reads += 1
+        return 1 if self.reads == 1 else 1.5
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(["n"])
+
+    def __len__(self) -> int:
+        return 1
+
+
+def test_the_result_signed_is_the_copy_that_was_checked(rig: Rig) -> None:
+    change_id = _stage_deep(rig, {"deep": []})
+    report = _apply_deep(rig, EchoApplier(result=ChangingMapping()))
+    [action] = rig.ledger.receipts("example-shop", kind="action")
+    assert action["result"] == {"n": 1}
+    assert "resultNotRecorded" not in action
+    assert report.applied == ((change_id, action["id"]),)
+    assert_receipt_valid(action, rig.signer.public_pem)

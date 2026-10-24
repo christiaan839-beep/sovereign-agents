@@ -65,7 +65,9 @@ def nesting(value: Any) -> int:
 
     Past ``RECEIPT_MAX_NESTING`` it stops and returns ``RECEIPT_MAX_NESTING + 1``, so a cyclic
     value ends too. A list or dict met again at the same level is not walked again, so a value
-    that shares one many times over is walked once per level.
+    that shares one many times over is walked once per level. Only ``dict`` and ``list`` count:
+    a tuple or another kind of Mapping is a leaf, which is safe because ``canonicalize`` refuses
+    both, so a value holding one is refused before it is signed.
     """
     deepest = 0
     walked: set[tuple[int, int]] = set()
@@ -275,8 +277,13 @@ def _maybe_time(text: str | None) -> datetime | None:
 
 
 class Ledger:
-    def __init__(self, path: Path | str) -> None:
-        self._db = sqlite3.connect(str(path), isolation_level=None)
+    def __init__(self, path: Path | str, *, timeout: float = 5.0) -> None:
+        # ``timeout`` is how long a write waits for another connection's lock, in seconds.
+        # The journal stays SQLite's default rollback journal, not WAL: the ledger is one file
+        # that is copied whole and opened read-only (mode=ro) to check it, which WAL's -wal
+        # and -shm side files would complicate. One host process writes at a time, so the
+        # readers WAL would let through are rare, and a COMMIT they block now rolls back.
+        self._db = sqlite3.connect(str(path), isolation_level=None, timeout=timeout)
         self._tx_depth = 0
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
@@ -287,25 +294,37 @@ class Ledger:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
-        # Inside another transaction this joins it: the outermost one commits, or rolls back
-        # everything when an error leaves it.
+        # The outermost block is a transaction: it commits, or rolls back when an error leaves
+        # it, the COMMIT's own included. A block inside another is a savepoint: an error that
+        # leaves it undoes its writes only, so a caller that catches the error keeps the rest.
+        # When SQLite has already rolled the transaction back itself, there is nothing to undo
+        # and the error is raised as it is.
         if self._tx_depth:
+            savepoint = f"tx_{self._tx_depth}"
+            self._db.execute(f"SAVEPOINT {savepoint}")
             self._tx_depth += 1
             try:
                 yield self._db
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute(f"ROLLBACK TO {savepoint}")
+                    self._db.execute(f"RELEASE {savepoint}")
+                raise
             finally:
                 self._tx_depth -= 1
+            self._db.execute(f"RELEASE {savepoint}")
             return
         self._db.execute("BEGIN IMMEDIATE")
         self._tx_depth = 1
         try:
             yield self._db
+            self._db.execute("COMMIT")
         except BaseException:
-            self._db.execute("ROLLBACK")
+            if self._db.in_transaction:
+                self._db.execute("ROLLBACK")
             raise
         finally:
             self._tx_depth = 0
-        self._db.execute("COMMIT")
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -395,6 +414,15 @@ class Ledger:
     def committed_micros(self, business: str, day: str) -> int:
         """Spend so far that day plus the reservations of its runs still open."""
         return self._committed(self._db, business, day)
+
+    def open_runs(self, business: str) -> list[Run]:
+        """The business's runs not yet ended, oldest first."""
+        rows = self._db.execute(
+            "SELECT run_id FROM runs WHERE business = ? AND ended_at IS NULL"
+            " ORDER BY started_at, rowid",
+            (business,),
+        ).fetchall()
+        return [self.get_run(row["run_id"]) for row in rows]
 
     def _committed(self, db: sqlite3.Connection, business: str, day: str) -> int:
         reserved = db.execute(
@@ -498,12 +526,6 @@ class Ledger:
     def mark_expired(self, change_id: str, now: datetime) -> Change:
         with self._tx() as db:
             self._move(db, change_id, ("staged", "approved"), "expired", now)
-        return self.get_change(change_id)
-
-    def mark_refused(self, change_id: str, now: datetime) -> Change:
-        """An approved change a gate refused at apply time."""
-        with self._tx() as db:
-            self._move(db, change_id, ("approved",), "refused", now)
         return self.get_change(change_id)
 
     def _move(

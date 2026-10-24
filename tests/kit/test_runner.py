@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import sqlite3
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -15,9 +16,16 @@ from sovereign_agents.kit.guard import ToolGuard
 from sovereign_agents.kit.job import Job
 from sovereign_agents.kit.ledger import DayCapReached, Ledger
 from sovereign_agents.kit.receipts import Signer, load_signer, new_keys
-from sovereign_agents.kit.runner import RunBudget, Runner, sign_run_receipt
+from sovereign_agents.kit.runner import (
+    ABANDON_AFTER,
+    RunBudget,
+    Runner,
+    close_abandoned_runs,
+    sign_run_receipt,
+)
 from sovereign_agents.kit.testing import ScriptedCall, ScriptedEngine, assert_receipt_valid
 from sovereign_agents.kit.tools import ToolSet
+from tests.helpers import allow_receipt_writes, refuse_receipt_writes
 from tests.kit.mail_job import Mailroom, build_mail_job
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
@@ -157,3 +165,68 @@ def test_a_budget_is_whole_micro_dollars_that_fit(
 
 def test_a_budget_reserves_the_run_cap_and_its_margin() -> None:
     assert BUDGET.reserve_micros == 750_000
+
+
+def test_a_run_whose_receipt_cannot_be_written_stays_open(
+    ledger: Ledger, signer: Signer, tmp_path: Path
+) -> None:
+    # A run is ended only together with its receipt; the engine's error is kept as the cause.
+    refuse_receipt_writes(tmp_path / "ledger.sqlite3", "run")
+    kit = runner(ledger, signer, BrokenEngine([]))
+    ctx = kit.begin("example_mail")
+    with pytest.raises(sqlite3.IntegrityError, match="disk full") as caught:
+        asyncio.run(kit.run(ctx, build_mail_job(ctx, Mailroom())))
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert ledger.get_run(ctx.run_id).ended_at is None
+    assert ledger.receipts("example-shop", kind="run") == []
+    assert [run.run_id for run in ledger.open_runs("example-shop")] == [ctx.run_id]
+
+
+def test_an_abandoned_run_is_closed_charged_and_receipted(
+    ledger: Ledger, signer: Signer, tmp_path: Path
+) -> None:
+    one_run = RunBudget(
+        run_cap_micros=500_000, day_cap_micros=750_000, overrun_margin_micros=250_000
+    )
+    clock = FixedClock(T0)
+    kit = Runner(
+        ledger=ledger, signer=signer, clock=clock, budget=one_run, engine=ScriptedEngine([])
+    )
+    refuse_receipt_writes(tmp_path / "ledger.sqlite3", "run")
+    ctx = kit.begin("example_mail")
+    with pytest.raises(sqlite3.IntegrityError):
+        asyncio.run(kit.run(ctx, build_mail_job(ctx, Mailroom())))
+    allow_receipt_writes(tmp_path / "ledger.sqlite3", "run")
+    # Not yet abandoned: the open run holds its reservation.
+    with pytest.raises(DayCapReached):
+        kit.begin("example_mail")
+    assert ledger.get_run(ctx.run_id).ended_at is None
+    clock.advance(ABANDON_AFTER + timedelta(seconds=1))
+    # Abandoned: closed and charged its reservation, which fills this day's cap as before.
+    with pytest.raises(DayCapReached):
+        kit.begin("example_mail")
+    run = ledger.get_run(ctx.run_id)
+    assert (run.outcome, run.cost_micros) == ("abandoned", 750_000)
+    assert ledger.spent_micros("example-shop", "2026-10-16") == 750_000
+    [receipt] = ledger.receipts("example-shop", kind="run")
+    assert (receipt["runId"], receipt["outcome"], receipt["costMicros"]) == (
+        ctx.run_id,
+        "abandoned",
+        750_000,
+    )
+    assert receipt["sample"] is None  # the ledger does not know; the receipt does not guess
+    assert_receipt_valid(receipt, signer.public_pem)
+    clock.advance(timedelta(days=1))
+    assert kit.begin("example_mail").run_id != ctx.run_id
+
+
+def test_a_run_another_process_closed_meanwhile_is_left_alone(
+    ledger: Ledger, signer: Signer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = runner(ledger, signer, ScriptedEngine([])).begin("example_mail")
+    seen_open = ledger.get_run(ctx.run_id)
+    ledger.end_run(ctx.run_id, outcome="success", cost_micros=0, duration_ms=0, now=T0)
+    monkeypatch.setattr(ledger, "open_runs", lambda business: [seen_open])
+    later = T0 + 2 * ABANDON_AFTER
+    assert close_abandoned_runs(ledger=ledger, signer=signer, now=later) == []
+    assert ledger.get_run(ctx.run_id).outcome == "success"

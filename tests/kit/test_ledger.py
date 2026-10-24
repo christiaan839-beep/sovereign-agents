@@ -3,6 +3,7 @@
 
 import sqlite3
 from collections.abc import Iterator
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,7 @@ from sovereign_agents.kit.ledger import (
     WrongStatus,
     nesting,
 )
-from tests.helpers import finishes_within
+from tests.helpers import finishes_within, refuse_receipt_writes
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
 TTL = timedelta(hours=48)
@@ -344,17 +345,17 @@ def test_expire_due_marks_only_staged_changes_past_their_expiry(ledger: Ledger) 
     assert ledger.get_change(late.change_id).status == "staged"
 
 
-def test_mark_expired_and_mark_refused_follow_the_status_rules(ledger: Ledger) -> None:
+def test_mark_expired_follows_the_status_rules(ledger: Ledger) -> None:
     start(ledger)
     staged = stage(ledger, "1" * 64)
-    approved = stage(ledger, "2" * 64)
-    ledger.record_decision(approved, decision="yes", decided_by="owner", channel="terminal", now=T0)
     assert ledger.mark_expired(staged, T0).status == "expired"
     with pytest.raises(WrongStatus):
         ledger.mark_expired(staged, T0)
-    assert ledger.mark_refused(approved, T0).status == "refused"
-    with pytest.raises(WrongStatus):
-        ledger.mark_refused(approved, T0)
+
+
+def test_mark_refused_is_gone() -> None:
+    # A refusal's status is set only with its record, by refuse_change.
+    assert not hasattr(Ledger, "mark_refused")
 
 
 @pytest.mark.forged_receipts
@@ -565,3 +566,69 @@ def test_nesting_stops_on_a_cycle() -> None:
     cyclic["again"] = [cyclic, cyclic]
     with finishes_within(5):
         assert nesting(cyclic) > RECEIPT_MAX_NESTING
+
+
+def test_an_inner_error_caught_inside_atomic_undoes_only_the_inner_writes(ledger: Ledger) -> None:
+    start(ledger)
+    change_id = stage(ledger)
+    ledger.record_decision(
+        change_id, decision="yes", decided_by="owner", channel="terminal", now=T0
+    )
+    with ledger.atomic():
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        # claim() marks the change applying, then finds no unused yes with this id and raises.
+        with pytest.raises(WrongStatus):
+            ledger.claim(change_id, approval_id="apr-not-this-one", now=T0)
+    assert ledger.get_change(change_id).status == "approved"
+    approval = ledger.approval_for(change_id)
+    assert approval is not None
+    assert approval.used_at is None
+    assert ledger.get_run("run-1").ended_at == T0  # the outer write still commits
+
+
+def test_a_failed_commit_leaves_the_ledger_usable(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.sqlite3"
+    ledger = Ledger(path, timeout=0.1)
+    try:
+        start(ledger)
+        with closing(sqlite3.connect(path, isolation_level=None)) as reader:
+            reader.execute("BEGIN")
+            reader.execute("SELECT * FROM runs").fetchall()  # holds a SHARED lock
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+            reader.execute("ROLLBACK")
+        assert ledger.get_run("run-1").ended_at is None
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        assert ledger.get_run("run-1").ended_at == T0
+    finally:
+        ledger.close()
+
+
+def test_an_error_after_sqlite_rolled_back_is_raised_as_it_is(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    start(ledger)
+    change_id = _claimed(ledger, "1" * 64)
+    refuse_receipt_writes(tmp_path / "ledger.sqlite3", "action", action="ROLLBACK")
+    with pytest.raises(sqlite3.IntegrityError, match="disk full"):
+        ledger.mark_applied_with_receipt(
+            change_id, receipt_id="rcp-1", business="biz", receipt={"id": "rcp-1"}, now=T0
+        )
+    assert ledger.get_change(change_id).status == "applying"
+    # The same inside atomic(): the savepoint is gone with the transaction, and so is the
+    # outer write.
+    with pytest.raises(sqlite3.IntegrityError, match="disk full"), ledger.atomic():
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        ledger.mark_applied_with_receipt(
+            change_id, receipt_id="rcp-1", business="biz", receipt={"id": "rcp-1"}, now=T0
+        )
+    assert ledger.get_run("run-1").ended_at is None
+    ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+
+
+def test_open_runs_lists_the_runs_not_yet_ended(ledger: Ledger) -> None:
+    start(ledger, "run-1")
+    start(ledger, "run-2")
+    ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+    assert [run.run_id for run in ledger.open_runs("biz")] == ["run-2"]
+    assert ledger.open_runs("other-biz") == []

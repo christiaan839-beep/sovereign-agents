@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +41,24 @@ def finishes_within(seconds: float) -> Iterator[None]:
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+
+
+def refuse_receipt_writes(ledger_path: Path, kind: str, action: str = "ABORT") -> None:
+    """Make the ledger file refuse every new receipt of ``kind``, as a full disk would.
+
+    ``action`` is the trigger's RAISE action: ABORT fails the statement, ROLLBACK also ends
+    the transaction, as SQLite does itself on some errors.
+    """
+    with closing(sqlite3.connect(ledger_path)) as db, db:
+        db.execute(
+            f"CREATE TRIGGER no_{kind}_receipts BEFORE INSERT ON receipts"
+            f" WHEN NEW.kind = '{kind}' BEGIN SELECT RAISE({action}, 'disk full'); END"
+        )
+
+
+def allow_receipt_writes(ledger_path: Path, kind: str) -> None:
+    with closing(sqlite3.connect(ledger_path)) as db, db:
+        db.execute(f"DROP TRIGGER no_{kind}_receipts")
 
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)

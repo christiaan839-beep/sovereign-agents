@@ -62,6 +62,11 @@ It is the code behind the studio's line "One agent, one job, one week".
      before any job code sees it.
    - A change is marked applied in the same ledger write that stores its signed action receipt, and a run is ended in
      the same write that stores its run receipt. A refusal and the status it sets are one write too.
+   - A run whose receipt could not be written stays open, and its reservation keeps counting against that day's cap.
+     The next run or apply pass of the business closes any run open for more than two hours (`ABANDON_AFTER`) as
+     `abandoned`: it charges the whole reservation as spend, since the real cost is unknown, and signs a run receipt
+     whose `sample`, `toolCalls`, `applied` and `unfinished` are null because only the lost process knew them. The
+     charge holds the day's cap just as the reservation did; the gain is a closed run, recorded spend and a receipt.
    - When the applier returns a result the receipt cannot carry (not a JSON object, a float, nested too deep), its
      side effect has already happened. The change is applied, its receipt has `"result": null` and a
      `resultNotRecorded` reason that does not repeat the result, and the apply pass names it to the owner.

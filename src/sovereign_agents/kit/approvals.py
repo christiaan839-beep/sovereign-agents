@@ -47,7 +47,7 @@ from .ledger import (
     new_id,
 )
 from .receipts import Signer, sign_receipt
-from .runner import sign_run_receipt
+from .runner import close_abandoned_runs, sign_run_receipt
 
 
 def pending(ledger: Ledger, business: str, clock: Clock) -> list[Change]:
@@ -94,7 +94,7 @@ class ApplyReport:
 def _action_body(
     change: Change,
     approval: Approval,
-    result: Mapping[str, Any] | None,
+    result: dict[str, Any] | None,
     apply_run_id: str,
     sample: bool,
 ) -> dict[str, Any]:
@@ -107,7 +107,7 @@ def _action_body(
         "idempotencyKey": change.idempotency_key,
         "sample": sample,
         "action": change.payload,
-        "result": None if result is None else dict(result),
+        "result": result,
         "approval": {
             "id": approval.approval_id,
             "decision": approval.decision,
@@ -129,17 +129,18 @@ def _payload_refusal(change: Change) -> Refusal | None:
     return None
 
 
-def _result_problem(result: object) -> str | None:
-    """Why the applier's result cannot go in the action receipt, or None when it can.
+def _result_problem(result: dict[str, Any] | None) -> str | None:
+    """Why the applier's result (the one copy that will be signed) cannot go in the action
+    receipt, or None when it can; None for ``result`` means the applier returned no mapping.
 
     The reason never repeats the result: the library's own messages quote the value.
     """
-    if not isinstance(result, Mapping):
+    if result is None:
         return "it is not a JSON object"
     if nesting(result) > ACTION_FIELD_MAX_NESTING:
         return "it nests deeper than the action receipt allows"
     try:
-        canonicalize({"result": dict(result)})  # the result at its level in the receipt
+        canonicalize({"result": result})  # the result at its level in the receipt
     except (TypeError, ValueError):
         return (
             "it holds a value a receipt cannot carry"
@@ -166,6 +167,7 @@ def apply_approved(
     """
     business = signer.business
     started = clock.now()
+    close_abandoned_runs(ledger=ledger, signer=signer, now=started)
     run_id = new_id("run")
     ledger.begin_run(
         run_id=run_id,
@@ -214,7 +216,9 @@ def apply_approved(
                 ledger.claim(change.change_id, approval_id=approval.approval_id, now=now)
             except WrongStatus:
                 continue  # another pass claimed it after this one read it
-            result = applier.apply(change)
+            returned = applier.apply(change)
+            # One copy: the one checked is the one signed.
+            result = dict(returned) if isinstance(returned, Mapping) else None
             problem = _result_problem(result)
             body = _action_body(change, approval, None if problem else result, run_id, sample)
             if problem is not None:
