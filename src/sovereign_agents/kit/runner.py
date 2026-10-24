@@ -164,21 +164,22 @@ class Runner:
             failure = exc
             report = EngineRun(f"error: {type(exc).__name__}", 0, 0)
         now = self._clock.now()
-        self._ledger.end_run(
-            ctx.run_id,
-            outcome=report.outcome,
-            cost_micros=report.cost_micros,
-            duration_ms=report.duration_ms,
-            now=now,
-        )
-        receipt = sign_run_receipt(
-            ledger=self._ledger,
-            signer=self._signer,
-            run_id=ctx.run_id,
-            sample=ctx.sample,
-            tool_calls=guard.calls,
-            now=now,
-        )
+        with self._ledger.atomic():  # a run is ended only together with its receipt
+            self._ledger.end_run(
+                ctx.run_id,
+                outcome=report.outcome,
+                cost_micros=report.cost_micros,
+                duration_ms=report.duration_ms,
+                now=now,
+            )
+            receipt = sign_run_receipt(
+                ledger=self._ledger,
+                signer=self._signer,
+                run_id=ctx.run_id,
+                sample=ctx.sample,
+                tool_calls=guard.calls,
+                now=now,
+            )
         if failure is not None:
             raise failure
         return RunResult(

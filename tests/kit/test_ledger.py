@@ -10,12 +10,16 @@ from typing import Any
 import pytest
 
 from sovereign_agents.kit.ledger import (
+    RECEIPT_MAX_NESTING,
     ChangeExpired,
     DayCapReached,
     Ledger,
     NotFound,
+    PayloadTooDeep,
     WrongStatus,
+    nesting,
 )
+from tests.helpers import finishes_within
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
 TTL = timedelta(hours=48)
@@ -219,7 +223,7 @@ def test_a_payload_too_deep_for_its_action_receipt_is_refused_at_staging(ledger:
     # The payload is level 2 of the action receipt, so as its own level 1 it may nest 63 deep:
     # {"deep": <63 lists>} is 64 deep and would make the receipt 65.
     start(ledger)
-    with pytest.raises(ValueError, match="nests 64 deep; the action receipt allows 63"):
+    with pytest.raises(PayloadTooDeep, match="nests deeper than 63, the most the action receipt"):
         ledger.stage_change(
             run_id="run-1",
             business="biz",
@@ -353,14 +357,13 @@ def test_mark_expired_and_mark_refused_follow_the_status_rules(ledger: Ledger) -
         ledger.mark_refused(approved, T0)
 
 
+@pytest.mark.forged_receipts
 def test_a_claim_uses_the_approval_once_before_the_change_is_applied(ledger: Ledger) -> None:
     start(ledger)
     change_id = stage(ledger)
     approval = ledger.record_decision(
         change_id, decision="yes", decided_by="owner", channel="terminal", now=T0
     )
-    with pytest.raises(WrongStatus):
-        ledger.mark_applied(change_id, now=T0)
     claimed = ledger.claim(change_id, approval_id=approval.approval_id, now=T0)
     assert claimed.status == "applying"
     used = ledger.approval_for(change_id)
@@ -368,9 +371,11 @@ def test_a_claim_uses_the_approval_once_before_the_change_is_applied(ledger: Led
     assert used.used_at == T0
     with pytest.raises(WrongStatus):
         ledger.claim(change_id, approval_id=approval.approval_id, now=T0)
-    assert ledger.mark_applied(change_id, now=T0).status == "applied"
-    with pytest.raises(WrongStatus):
-        ledger.mark_applied(change_id, now=T0)
+    receipt = {"id": "rcp-1"}
+    applied = ledger.mark_applied_with_receipt(
+        change_id, receipt_id="rcp-1", business="biz", receipt=receipt, now=T0
+    )
+    assert applied.status == "applied"
 
 
 def test_a_claim_with_another_changes_approval_changes_nothing(ledger: Ledger) -> None:
@@ -461,3 +466,102 @@ def test_records_made_at_the_same_time_keep_their_order(ledger: Ledger) -> None:
         for n in range(6)
     ]
     assert [record.tool for record in ledger.refusals(run_id="run-1")] == made
+
+
+def _claimed(ledger: Ledger, key: str) -> str:
+    change_id = stage(ledger, key)
+    approval = ledger.record_decision(
+        change_id, decision="yes", decided_by="owner", channel="terminal", now=T0
+    )
+    ledger.claim(change_id, approval_id=approval.approval_id, now=T0)
+    return change_id
+
+
+@pytest.mark.forged_receipts
+def test_an_applied_change_and_its_receipt_are_one_write(ledger: Ledger) -> None:
+    start(ledger)
+    approved = stage(ledger, "1" * 64)
+    ledger.record_decision(approved, decision="yes", decided_by="owner", channel="terminal", now=T0)
+    with pytest.raises(WrongStatus):
+        ledger.mark_applied_with_receipt(
+            approved, receipt_id="rcp-1", business="biz", receipt={"id": "rcp-1"}, now=T0
+        )
+    assert ledger.receipts("biz") == []
+    # The receipt's write fails (its id is taken): the change is not marked applied either.
+    change_id = _claimed(ledger, "2" * 64)
+    ledger.add_receipt(
+        receipt_id="rcp-2", business="biz", kind="run", subject_id="run-1", receipt={}, now=T0
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        ledger.mark_applied_with_receipt(
+            change_id, receipt_id="rcp-2", business="biz", receipt={"id": "rcp-2"}, now=T0
+        )
+    assert ledger.get_change(change_id).status == "applying"
+    assert ledger.receipts("biz", kind="action") == []
+    receipt = {"id": "rcp-3"}
+    ledger.mark_applied_with_receipt(
+        change_id, receipt_id="rcp-3", business="biz", receipt=receipt, now=T0
+    )
+    assert ledger.get_change(change_id).status == "applied"
+    assert ledger.receipts("biz", kind="action", subject_id=change_id) == [receipt]
+    with pytest.raises(WrongStatus):
+        ledger.mark_applied_with_receipt(
+            change_id, receipt_id="rcp-4", business="biz", receipt={"id": "rcp-4"}, now=T0
+        )
+    assert ledger.receipts("biz", kind="action") == [receipt]
+
+
+def test_a_refusal_and_its_status_are_one_write(ledger: Ledger) -> None:
+    start(ledger)
+    refused = stage(ledger, "1" * 64)
+    expired = stage(ledger, "2" * 64)
+    for change_id in (refused, expired):
+        ledger.record_decision(
+            change_id, decision="yes", decided_by="owner", channel="terminal", now=T0
+        )
+    record = ledger.refuse_change(
+        refused, run_id="run-1", business="biz", gate="caps", reason="over the cap", now=T0
+    )
+    assert (record.change_id, record.gate, record.tool) == (refused, "caps", "apply")
+    assert ledger.get_change(refused).status == "refused"
+    ledger.refuse_change(
+        expired, run_id="run-1", business="biz", gate="expiry", reason="late", now=T0, expire=True
+    )
+    assert ledger.get_change(expired).status == "expired"
+    # Refused again (by a second pass that read it as approved): no second refusal is kept.
+    with pytest.raises(WrongStatus):
+        ledger.refuse_change(
+            refused, run_id="run-1", business="biz", gate="caps", reason="over", now=T0
+        )
+    assert [r.change_id for r in ledger.refusals(run_id="run-1")] == [refused, expired]
+
+
+@pytest.mark.forged_receipts
+def test_writes_inside_atomic_commit_together_or_not_at_all(ledger: Ledger) -> None:
+    start(ledger)
+    with pytest.raises(RuntimeError, match="stop"), ledger.atomic():
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        raise RuntimeError("stop")
+    assert ledger.get_run("run-1").ended_at is None
+    with ledger.atomic():
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        ledger.add_receipt(
+            receipt_id="rcp-1", business="biz", kind="run", subject_id="run-1", receipt={}, now=T0
+        )
+    assert ledger.get_run("run-1").ended_at == T0
+    assert ledger.receipts("biz", kind="run") == [{}]
+
+
+def test_nesting_counts_lists_and_dicts() -> None:
+    shared: list[Any] = [[[]]]  # 3 deep, reached at level 2 and at level 4
+    assert nesting({"a": shared, "b": [[shared]]}) == 6
+    assert nesting({"a": shared, "b": shared}) == 4  # the second is not walked again
+    assert (nesting(5), nesting({}), nesting([{}])) == (0, 1, 2)
+
+
+def test_nesting_stops_on_a_cycle() -> None:
+    cyclic: dict[str, Any] = {}
+    cyclic["self"] = cyclic
+    cyclic["again"] = [cyclic, cyclic]
+    with finishes_within(5):
+        assert nesting(cyclic) > RECEIPT_MAX_NESTING

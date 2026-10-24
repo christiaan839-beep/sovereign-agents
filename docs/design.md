@@ -56,6 +56,18 @@ It is the code behind the studio's line "One agent, one job, one week".
    - Each applied action, and each run (its cost, the tools it called, what it staged, how it ended), is signed in the
      verifiable-receipts v2 format with the business's Ed25519 key.
    - Amounts are whole cents, never floats, so the signed text is byte-for-byte the same in Python, Go and JavaScript.
+   - Verifiers reject a receipt nested deeper than 64. The action receipt signs a change's payload and the applier's
+     result at level 2, so each may nest at most 63 deep. A deeper payload is refused when it is staged. A staged
+     change too deep to sign (in a ledger written before that check) cannot get a yes, and is refused at apply
+     before any job code sees it.
+   - A change is marked applied in the same ledger write that stores its signed action receipt, and a run is ended in
+     the same write that stores its run receipt. A refusal and the status it sets are one write too.
+   - When the applier returns a result the receipt cannot carry (not a JSON object, a float, nested too deep), its
+     side effect has already happened. The change is applied, its receipt has `"result": null` and a
+     `resultNotRecorded` reason that does not repeat the result, and the apply pass names it to the owner.
+   - A change the apply pass claimed and could not mark applied stays `applying` and is listed as unfinished in the
+     pass's run receipt: its applier raised, so whether the side effect happened is unknown, or its receipt could not
+     be stored. The kit never applies it again on its own; the owner decides.
 7. **Keys are new and stay where they belong.**
    - `sovereign-agents keys new` makes each business its own Ed25519 key pair.
    - The private key never goes in the repo, a log or the model's context. The hosted version keeps it in the host's
@@ -112,8 +124,9 @@ Guardrails run again at apply time against the caps in force then, as commerce-a
 3. The agent stages changes through the job's stage tools. Each staged change is checked against the gates and the caps.
 4. The run ends. The kit signs a run receipt, and the staged changes wait for the owner.
 5. The owner says yes or no to each one. Nothing is sent before then.
-6. On a yes, the host re-checks the expiry, the approval and the caps, claims the change, applies it through the
-   connector, and signs a receipt for the action.
+6. On a yes, the host re-checks that the payload can be signed, the expiry, the approval and the caps, claims the
+   change, applies it through the connector, and signs a receipt for the action, stored in the same write that marks
+   the change applied.
 
 ## The four jobs
 

@@ -19,7 +19,9 @@ still open); a payload with a float in it, or nested too deep for the action rec
 will sign it (see ``ACTION_FIELD_MAX_NESTING``); a decision on a change that is not staged or has
 expired; a claim without an unused yes for that very change, or on a change that is not
 approved; marking a change applied that was not claimed; any status the schema does not know.
-Amounts are integers. Times come from the injected clock.
+A status and the record that explains it are one write: a change becomes applied together with
+its action receipt, and refused or expired together with its refusal; ``atomic`` joins other
+writes the same way. Amounts are integers. Times come from the injected clock.
 """
 
 from __future__ import annotations
@@ -54,9 +56,19 @@ ACTION_FIELD_LEVEL = 2
 ACTION_FIELD_MAX_NESTING = RECEIPT_MAX_NESTING - (ACTION_FIELD_LEVEL - 1)
 
 
+class PayloadTooDeep(ValueError):
+    """A payload nested deeper than the action receipt that would sign it can carry."""
+
+
 def nesting(value: Any) -> int:
-    """How deep ``value`` nests: 0 for a scalar, 1 for a list or dict, one more for each inside."""
+    """How deep ``value`` nests: 0 for a scalar, 1 for a list or dict, one more for each inside.
+
+    Past ``RECEIPT_MAX_NESTING`` it stops and returns ``RECEIPT_MAX_NESTING + 1``, so a cyclic
+    value ends too. A list or dict met again at the same level is not walked again, so a value
+    that shares one many times over is walked once per level.
+    """
     deepest = 0
+    walked: set[tuple[int, int]] = set()
     stack: list[tuple[Any, int]] = [(value, 1)]
     while stack:
         item, level = stack.pop()
@@ -66,9 +78,24 @@ def nesting(value: Any) -> int:
             children = item
         else:
             continue
+        if level > RECEIPT_MAX_NESTING:
+            return level
+        if (id(item), level) in walked:
+            continue
+        walked.add((id(item), level))
         deepest = max(deepest, level)
         stack.extend((child, level + 1) for child in children)
     return deepest
+
+
+def check_payload_depth(payload: Any) -> None:
+    """Raise :class:`PayloadTooDeep` when ``payload`` nests deeper than its receipt allows."""
+    if nesting(payload) > ACTION_FIELD_MAX_NESTING:
+        raise PayloadTooDeep(
+            f"payload nests deeper than {ACTION_FIELD_MAX_NESTING}, the most the action receipt"
+            f" can sign: it signs the payload at level {ACTION_FIELD_LEVEL}, and verifiers"
+            f" reject a receipt nested deeper than {RECEIPT_MAX_NESTING}"
+        )
 
 
 SCHEMA = """
@@ -250,6 +277,7 @@ def _maybe_time(text: str | None) -> datetime | None:
 class Ledger:
     def __init__(self, path: Path | str) -> None:
         self._db = sqlite3.connect(str(path), isolation_level=None)
+        self._tx_depth = 0
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(SCHEMA)
@@ -259,13 +287,31 @@ class Ledger:
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
+        # Inside another transaction this joins it: the outermost one commits, or rolls back
+        # everything when an error leaves it.
+        if self._tx_depth:
+            self._tx_depth += 1
+            try:
+                yield self._db
+            finally:
+                self._tx_depth -= 1
+            return
         self._db.execute("BEGIN IMMEDIATE")
+        self._tx_depth = 1
         try:
             yield self._db
         except BaseException:
             self._db.execute("ROLLBACK")
             raise
+        finally:
+            self._tx_depth = 0
         self._db.execute("COMMIT")
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Every ledger write inside the block commits together, or none does."""
+        with self._tx():
+            yield
 
     # Runs and spend
 
@@ -379,13 +425,7 @@ class Ledger:
         canonical JSON, which refuses floats. A payload nested deeper than the action receipt
         can sign (``ACTION_FIELD_MAX_NESTING``) is refused here, before anyone can approve it.
         """
-        depth = nesting(payload)
-        if depth > ACTION_FIELD_MAX_NESTING:
-            raise ValueError(
-                f"payload nests {depth} deep; the action receipt allows "
-                f"{ACTION_FIELD_MAX_NESTING}: it signs the payload at level {ACTION_FIELD_LEVEL}, "
-                f"and verifiers reject a receipt nested deeper than {RECEIPT_MAX_NESTING}"
-            )
+        check_payload_depth(payload)
         with self._tx() as db:
             row = db.execute(
                 "SELECT change_id FROM changes WHERE business = ? AND idempotency_key = ?",
@@ -564,11 +604,58 @@ class Ledger:
                 raise WrongStatus(f"approval {approval_id} is not an unused yes for {change_id}")
         return self.get_change(change_id)
 
-    def mark_applied(self, change_id: str, *, now: datetime) -> Change:
-        """Mark a claimed change applied, once the applier has carried it out."""
+    def mark_applied_with_receipt(
+        self,
+        change_id: str,
+        *,
+        receipt_id: str,
+        business: str,
+        receipt: dict[str, Any],
+        now: datetime,
+    ) -> Change:
+        """Mark a claimed change applied and store its signed action receipt, in one write.
+
+        Either both happen or neither: a change is never applied without its receipt.
+        """
         with self._tx() as db:
             self._move(db, change_id, ("applying",), "applied", now)
+            self.add_receipt(
+                receipt_id=receipt_id,
+                business=business,
+                kind="action",
+                subject_id=change_id,
+                receipt=receipt,
+                now=now,
+            )
         return self.get_change(change_id)
+
+    def refuse_change(
+        self,
+        change_id: str,
+        *,
+        run_id: str,
+        business: str,
+        gate: str,
+        reason: str,
+        now: datetime,
+        expire: bool = False,
+    ) -> RefusalRecord:
+        """Refuse (or, with ``expire``, expire) an approved change and record why, in one write.
+
+        Raises :class:`WrongStatus`, recording nothing, when the change is no longer approved
+        (another apply pass got to it first).
+        """
+        with self._tx() as db:
+            self._move(db, change_id, ("approved",), "expired" if expire else "refused", now)
+            return self.record_refusal(
+                run_id=run_id,
+                business=business,
+                tool="apply",
+                gate=gate,
+                reason=reason,
+                now=now,
+                change_id=change_id,
+            )
 
     # Refusals and flags
 

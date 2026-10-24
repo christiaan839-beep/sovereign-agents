@@ -266,9 +266,11 @@ def test_an_edited_receipt_fails_verification(tmp_path: Path, field: str, value:
         now=T0,
     )
     edited = dict(receipt, **{field: value})
-    assert_receipt_rejected(edited, signer.public_pem)
+    assert_receipt_rejected(
+        edited, signer.public_pem, f'envelope field "{field}" disagrees with the signed canonical'
+    )
     canonical_edited = dict(receipt, canonical=receipt["canonical"].replace("77000", "77001"))
-    assert_receipt_rejected(canonical_edited, signer.public_pem)
+    assert_receipt_rejected(canonical_edited, signer.public_pem, "contentHash mismatch")
     ledger.close()
 
 
@@ -284,7 +286,7 @@ def test_a_receipt_with_an_empty_content_hash_fails_verification(tmp_path: Path)
     emptied = dict(receipt, contentHash="")
     result = verify(emptied, signer.public_pem)
     assert "contentHash mismatch" in (result.reason or "")
-    assert_receipt_rejected(emptied, signer.public_pem)
+    assert_receipt_rejected(emptied, signer.public_pem, "contentHash mismatch")
     ledger.close()
 
 
@@ -342,7 +344,11 @@ def test_go_verifier_agrees_with_python(tmp_path: Path) -> None:
         now=T0,
     )
     assert_receipt_valid(receipt, signer.public_pem)
-    assert_receipt_rejected(dict(receipt, costMicros=0), signer.public_pem)
+    assert_receipt_rejected(
+        dict(receipt, costMicros=0),
+        signer.public_pem,
+        'envelope field "costMicros" disagrees with the signed canonical',
+    )
     ledger.close()
 
 

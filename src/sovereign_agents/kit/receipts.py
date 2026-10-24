@@ -85,7 +85,7 @@ def new_keys(keys_dir: Path) -> Path:
 @dataclass(frozen=True)
 class Signer:
     business: str
-    private_key: Ed25519PrivateKey = field(repr=False)
+    private_key: Ed25519PrivateKey = field(repr=False)  # gitleaks:allow (a type, not a key)
     public_pem: bytes
 
     def sign(self, body: Mapping[str, Any]) -> dict[str, Any]:
@@ -118,6 +118,20 @@ def load_public_pem(keys_dir: Path) -> bytes:
     return public_path.read_bytes()
 
 
+def sign_receipt(
+    *, signer: Signer, kind: ReceiptKind, body: Mapping[str, Any], now: datetime
+) -> dict[str, Any]:
+    """Sign ``body`` under the kit's receipt header, without storing it; its ``id`` is new."""
+    header = {
+        "v": 1,
+        "type": f"sovereign-agents/{kind}",
+        "id": new_id("rcp"),
+        "business": signer.business,
+        "createdAt": iso(now),
+    }
+    return signer.sign({**body, **header})
+
+
 def issue_receipt(
     *,
     ledger: Ledger,
@@ -128,17 +142,9 @@ def issue_receipt(
     now: datetime,
 ) -> dict[str, Any]:
     """Sign ``body`` under the kit's receipt header and store the receipt in the ledger."""
-    receipt_id = new_id("rcp")
-    header = {
-        "v": 1,
-        "type": f"sovereign-agents/{kind}",
-        "id": receipt_id,
-        "business": signer.business,
-        "createdAt": iso(now),
-    }
-    receipt = signer.sign({**body, **header})
+    receipt = sign_receipt(signer=signer, kind=kind, body=body, now=now)
     ledger.add_receipt(
-        receipt_id=receipt_id,
+        receipt_id=str(receipt["id"]),
         business=signer.business,
         kind=kind,
         subject_id=subject_id,

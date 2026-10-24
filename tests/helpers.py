@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import signal
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from sovereign_agents.connectors.business import Business, load_sample_business
@@ -20,6 +24,22 @@ SAMPLE = "sample-bakery"
 def sample_business(outbox_dir: Path, samples_root: Path = SAMPLES) -> Business:
     """The made-up sample bakery, with its outbox in ``outbox_dir``."""
     return load_sample_business(samples_root, SAMPLE, outbox_dir)
+
+
+@contextmanager
+def finishes_within(seconds: float) -> Iterator[None]:
+    """Raise TimeoutError in the block once it has run ``seconds`` (SIGALRM, so Unix only)."""
+
+    def expire(signum: int, frame: FrameType | None) -> None:
+        raise TimeoutError(f"still running after {seconds} s")
+
+    previous = signal.signal(signal.SIGALRM, expire)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
