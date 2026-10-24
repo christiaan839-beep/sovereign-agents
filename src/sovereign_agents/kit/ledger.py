@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS runs (
     outcome TEXT,
     reserved_micros INTEGER NOT NULL CHECK (reserved_micros >= 0),
     cost_micros INTEGER CHECK (cost_micros >= 0),
-    duration_ms INTEGER CHECK (duration_ms >= 0)
+    duration_ms INTEGER CHECK (duration_ms >= 0),
+    sample INTEGER CHECK (sample IN (0, 1))
 );
 CREATE TABLE IF NOT EXISTS spend (
     business TEXT NOT NULL,
@@ -192,6 +193,14 @@ class ChangeExpired(LedgerError):
     pass
 
 
+class RunEnded(LedgerError):
+    """A write into a run that has ended: what it would record would be in no receipt."""
+
+
+class TransactionBroken(LedgerError):
+    """SQLite rolled back the transaction inside ``atomic()`` itself; nothing more is written."""
+
+
 class DayCapReached(LedgerError):
     def __init__(self, committed_micros: int, cap_micros: int) -> None:
         self.committed_micros = committed_micros
@@ -216,6 +225,8 @@ class Run:
     reserved_micros: int
     cost_micros: int | None
     duration_ms: int | None
+    # Whether the run worked on a sample business; None in a ledger from before it was kept.
+    sample: bool | None
 
 
 @dataclass(frozen=True)
@@ -288,6 +299,10 @@ class Ledger:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(SCHEMA)
+        # A ledger from before runs kept their sample label gains the column, empty (unknown).
+        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(runs)")}
+        if "sample" not in columns:
+            self._db.execute("ALTER TABLE runs ADD COLUMN sample INTEGER CHECK (sample IN (0, 1))")
 
     def close(self) -> None:
         self._db.close()
@@ -297,9 +312,15 @@ class Ledger:
         # The outermost block is a transaction: it commits, or rolls back when an error leaves
         # it, the COMMIT's own included. A block inside another is a savepoint: an error that
         # leaves it undoes its writes only, so a caller that catches the error keeps the rest.
-        # When SQLite has already rolled the transaction back itself, there is nothing to undo
-        # and the error is raised as it is.
+        # When SQLite has already rolled the whole transaction back itself (a full disk, an
+        # I/O error, a trigger's RAISE(ROLLBACK)), there is nothing to undo: the error is
+        # raised as it is. The connection is then out of a transaction while a block is still
+        # open, and that is the mark: until the outermost block ends, every later write in it
+        # (all of them go through here) raises TransactionBroken instead of committing on its
+        # own, and the outermost block raises it too rather than commit.
         if self._tx_depth:
+            if not self._db.in_transaction:
+                raise TransactionBroken("SQLite rolled this transaction back; nothing was kept")
             savepoint = f"tx_{self._tx_depth}"
             self._db.execute(f"SAVEPOINT {savepoint}")
             self._tx_depth += 1
@@ -318,6 +339,8 @@ class Ledger:
         self._tx_depth = 1
         try:
             yield self._db
+            if not self._db.in_transaction:
+                raise TransactionBroken("SQLite rolled this transaction back; nothing was kept")
             self._db.execute("COMMIT")
         except BaseException:
             if self._db.in_transaction:
@@ -325,6 +348,14 @@ class Ledger:
             raise
         finally:
             self._tx_depth = 0
+
+    def _check_open(self, db: sqlite3.Connection, run_id: str) -> None:
+        """Raise unless ``run_id`` is a run still open; called inside the write's transaction."""
+        row = db.execute("SELECT ended_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFound(f"no run {run_id}")
+        if row["ended_at"] is not None:
+            raise RunEnded(f"run {run_id} has ended; nothing more is written into it")
 
     @contextmanager
     def atomic(self) -> Iterator[None]:
@@ -345,6 +376,7 @@ class Ledger:
         now: datetime,
         reserve_micros: int,
         day_cap_micros: int | None,
+        sample: bool = False,
     ) -> Run:
         """Record a run as started and reserve its spend cap against the day's cap.
 
@@ -359,8 +391,8 @@ class Ledger:
                 raise DayCapReached(committed, day_cap_micros)
             db.execute(
                 "INSERT INTO runs (run_id, business, job, kind, engine, day, started_at,"
-                " reserved_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (run_id, business, job, kind, engine, day, iso(now), reserve_micros),
+                " reserved_micros, sample) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, business, job, kind, engine, day, iso(now), reserve_micros, int(sample)),
             )
         return self.get_run(run_id)
 
@@ -403,6 +435,7 @@ class Ledger:
             reserved_micros=row["reserved_micros"],
             cost_micros=row["cost_micros"],
             duration_ms=row["duration_ms"],
+            sample=None if row["sample"] is None else bool(row["sample"]),
         )
 
     def spent_micros(self, business: str, day: str) -> int:
@@ -455,6 +488,7 @@ class Ledger:
         """
         check_payload_depth(payload)
         with self._tx() as db:
+            self._check_open(db, run_id)
             row = db.execute(
                 "SELECT change_id FROM changes WHERE business = ? AND idempotency_key = ?",
                 (business, idempotency_key),
@@ -609,13 +643,18 @@ class Ledger:
             used_at=_maybe_time(row["used_at"]),
         )
 
-    def claim(self, change_id: str, *, approval_id: str, now: datetime) -> Change:
+    def claim(
+        self, change_id: str, *, approval_id: str, now: datetime, run_id: str | None = None
+    ) -> Change:
         """Mark an approved change applying and its yes used, together or not at all.
 
         The host claims a change before it calls the applier, so another apply pass finds it
-        claimed and leaves it alone, and the same yes can never be used twice.
+        claimed and leaves it alone, and the same yes can never be used twice. With ``run_id``
+        (the apply pass's run), a run that has ended, closed as abandoned say, claims nothing.
         """
         with self._tx() as db:
+            if run_id is not None:
+                self._check_open(db, run_id)
             self._move(db, change_id, ("approved",), "applying", now)
             used = db.execute(
                 "UPDATE approvals SET used_at = ? WHERE approval_id = ? AND change_id = ?"
@@ -693,11 +732,13 @@ class Ledger:
         change_id: str | None = None,
     ) -> RefusalRecord:
         refusal_id = new_id("ref")
-        self._db.execute(
-            "INSERT INTO refusals (refusal_id, run_id, business, change_id, tool, gate, reason,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (refusal_id, run_id, business, change_id, tool, gate, reason, iso(now)),
-        )
+        with self._tx() as db:
+            self._check_open(db, run_id)
+            db.execute(
+                "INSERT INTO refusals (refusal_id, run_id, business, change_id, tool, gate,"
+                " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (refusal_id, run_id, business, change_id, tool, gate, reason, iso(now)),
+            )
         return RefusalRecord(refusal_id, run_id, business, change_id, tool, gate, reason, now)
 
     def refusals(self, *, run_id: str) -> list[RefusalRecord]:
@@ -723,11 +764,13 @@ class Ledger:
     ) -> Flag:
         """Something the agent reports to the owner; it changes nothing."""
         flag_id = new_id("flg")
-        self._db.execute(
-            "INSERT INTO flags (flag_id, run_id, business, source_id, note, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (flag_id, run_id, business, source_id, note, iso(now)),
-        )
+        with self._tx() as db:
+            self._check_open(db, run_id)
+            db.execute(
+                "INSERT INTO flags (flag_id, run_id, business, source_id, note, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (flag_id, run_id, business, source_id, note, iso(now)),
+            )
         return Flag(flag_id, run_id, business, source_id, note, now, None)
 
     def flags(self, *, run_id: str) -> list[Flag]:
@@ -774,18 +817,19 @@ class Ledger:
         receipt: dict[str, Any],
         now: datetime,
     ) -> None:
-        self._db.execute(
-            "INSERT INTO receipts (receipt_id, business, kind, subject_id, receipt, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                receipt_id,
-                business,
-                kind,
-                subject_id,
-                json.dumps(receipt, ensure_ascii=False),
-                iso(now),
-            ),
-        )
+        with self._tx() as db:
+            db.execute(
+                "INSERT INTO receipts (receipt_id, business, kind, subject_id, receipt,"
+                " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    receipt_id,
+                    business,
+                    kind,
+                    subject_id,
+                    json.dumps(receipt, ensure_ascii=False),
+                    iso(now),
+                ),
+            )
 
     def receipts(
         self,

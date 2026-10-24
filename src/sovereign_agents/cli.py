@@ -225,6 +225,11 @@ def apply_report_lines(report: ApplyReport) -> list[str]:
         " the kit does not apply it again on its own."
         for change_id in report.unfinished
     ]
+    lines += [
+        f"Not reached {change_id}: the apply pass reached its time limit;"
+        " it stays approved for the next pass."
+        for change_id in report.deferred
+    ]
     lines.append(f"Apply pass {report.run_id}; receipt {report.receipt['id']}")
     return lines
 

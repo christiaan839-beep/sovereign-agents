@@ -17,6 +17,8 @@ from sovereign_agents.kit.ledger import (
     Ledger,
     NotFound,
     PayloadTooDeep,
+    RunEnded,
+    TransactionBroken,
     WrongStatus,
     nesting,
 )
@@ -632,3 +634,121 @@ def test_open_runs_lists_the_runs_not_yet_ended(ledger: Ledger) -> None:
     ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
     assert [run.run_id for run in ledger.open_runs("biz")] == ["run-2"]
     assert ledger.open_runs("other-biz") == []
+
+
+def _write_into(ledger: Ledger, writer: str, run_id: str) -> object:
+    if writer == "stage_change":
+        return ledger.stage_change(
+            run_id=run_id,
+            business="biz",
+            job="job",
+            kind="order",
+            idempotency_key="9" * 64,
+            payload={"totalCents": 1},
+            summary="late",
+            now=T0,
+            ttl=TTL,
+        )
+    if writer == "record_refusal":
+        return ledger.record_refusal(
+            run_id=run_id, business="biz", tool="t", gate="tools", reason="late", now=T0
+        )
+    return ledger.add_flag(run_id=run_id, business="biz", source_id="m-1", note="late", now=T0)
+
+
+@pytest.mark.parametrize("writer", ["stage_change", "record_refusal", "add_flag"])
+def test_a_run_scoped_write_refuses_an_ended_run(ledger: Ledger, writer: str) -> None:
+    start(ledger)
+    _write_into(ledger, writer, "run-1")  # an open run takes it
+    ledger.end_run("run-1", outcome="abandoned", cost_micros=0, duration_ms=0, now=T0)
+    before = (ledger.changes("biz"), ledger.refusals(run_id="run-1"), ledger.flags(run_id="run-1"))
+    with pytest.raises(RunEnded, match="run-1 has ended"):
+        _write_into(ledger, writer, "run-1")
+    after = (ledger.changes("biz"), ledger.refusals(run_id="run-1"), ledger.flags(run_id="run-1"))
+    assert after == before
+    with pytest.raises(NotFound):
+        _write_into(ledger, writer, "run-nowhere")
+
+
+def test_a_claim_for_an_ended_apply_run_is_refused(ledger: Ledger) -> None:
+    start(ledger)
+    start(ledger, "run-apply")
+    change_id = stage(ledger)
+    approval = ledger.record_decision(
+        change_id, decision="yes", decided_by="owner", channel="terminal", now=T0
+    )
+    ledger.end_run("run-apply", outcome="abandoned", cost_micros=0, duration_ms=0, now=T0)
+    with pytest.raises(RunEnded):
+        ledger.claim(change_id, approval_id=approval.approval_id, now=T0, run_id="run-apply")
+    assert ledger.get_change(change_id).status == "approved"
+
+
+@pytest.mark.forged_receipts
+def test_writes_after_sqlite_rolled_back_inside_atomic_are_refused(
+    ledger: Ledger, tmp_path: Path
+) -> None:
+    start(ledger)
+    change_id = _claimed(ledger, "1" * 64)
+    refuse_receipt_writes(tmp_path / "ledger.sqlite3", "action", action="ROLLBACK")
+    # The caller catches the error and writes on: those writes must not land on their own.
+    with pytest.raises(TransactionBroken), ledger.atomic():
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        with pytest.raises(sqlite3.IntegrityError, match="disk full"):
+            ledger.mark_applied_with_receipt(
+                change_id, receipt_id="rcp-1", business="biz", receipt={"id": "rcp-1"}, now=T0
+            )
+        ledger.add_receipt(
+            receipt_id="rcp-2", business="biz", kind="run", subject_id="run-1", receipt={}, now=T0
+        )
+    assert ledger.receipts("biz") == []
+    assert ledger.get_run("run-1").ended_at is None
+    # The caller catches the error and writes nothing more: the block still fails on leaving.
+    with pytest.raises(TransactionBroken), ledger.atomic():
+        ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+        with pytest.raises(sqlite3.IntegrityError, match="disk full"):
+            ledger.mark_applied_with_receipt(
+                change_id, receipt_id="rcp-1", business="biz", receipt={"id": "rcp-1"}, now=T0
+            )
+    assert ledger.get_run("run-1").ended_at is None
+    ledger.end_run("run-1", outcome="success", cost_micros=1, duration_ms=1, now=T0)
+    assert ledger.get_run("run-1").ended_at == T0
+
+
+def test_a_run_keeps_its_sample_label(ledger: Ledger) -> None:
+    ledger.begin_run(
+        run_id="run-1",
+        business="biz",
+        job="job",
+        kind="agent",
+        engine="test-engine",
+        now=T0,
+        reserve_micros=0,
+        day_cap_micros=None,
+        sample=True,
+    )
+    start(ledger, "run-2")
+    assert (ledger.get_run("run-1").sample, ledger.get_run("run-2").sample) == (True, False)
+
+
+def test_a_ledger_from_before_the_sample_label_gains_it_unknown(tmp_path: Path) -> None:
+    path = tmp_path / "old.sqlite3"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, business TEXT NOT NULL,"
+            " job TEXT NOT NULL, kind TEXT NOT NULL, engine TEXT NOT NULL, day TEXT NOT NULL,"
+            " started_at TEXT NOT NULL, ended_at TEXT, outcome TEXT,"
+            " reserved_micros INTEGER NOT NULL, cost_micros INTEGER, duration_ms INTEGER)"
+        )
+        db.execute(
+            "INSERT INTO runs (run_id, business, job, kind, engine, day, started_at,"
+            " reserved_micros) VALUES ('run-old', 'biz', 'job', 'agent', 'e', '2026-10-16',"
+            " '2026-10-16T08:00:00Z', 0)"
+        )
+    ledger = Ledger(path)
+    try:
+        assert ledger.get_run("run-old").sample is None
+        start(ledger, "run-new")
+        assert ledger.get_run("run-new").sample is False
+    finally:
+        ledger.close()
+    Ledger(path).close()  # opening it again changes nothing

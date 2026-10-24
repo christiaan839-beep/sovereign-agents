@@ -200,3 +200,20 @@ def test_the_apply_summary_names_a_result_that_was_not_recorded() -> None:
         " it is not a JSON object",
         "Apply pass run-1; receipt rcp-run",
     ]
+
+
+def test_the_apply_summary_names_changes_past_the_time_limit() -> None:
+    report = ApplyReport(
+        run_id="run-1",
+        applied=(),
+        refused=(),
+        skipped=(),
+        unfinished=(),
+        receipt={"id": "rcp-run"},
+        deferred=("chg-2",),
+    )
+    assert apply_report_lines(report) == [
+        "Not reached chg-2: the apply pass reached its time limit; it stays approved for the"
+        " next pass.",
+        "Apply pass run-1; receipt rcp-run",
+    ]

@@ -18,6 +18,7 @@ from sovereign_agents.kit.ledger import DayCapReached, Ledger
 from sovereign_agents.kit.receipts import Signer, load_signer, new_keys
 from sovereign_agents.kit.runner import (
     ABANDON_AFTER,
+    RUN_TIME_LIMIT,
     RunBudget,
     Runner,
     close_abandoned_runs,
@@ -193,7 +194,7 @@ def test_an_abandoned_run_is_closed_charged_and_receipted(
         ledger=ledger, signer=signer, clock=clock, budget=one_run, engine=ScriptedEngine([])
     )
     refuse_receipt_writes(tmp_path / "ledger.sqlite3", "run")
-    ctx = kit.begin("example_mail")
+    ctx = kit.begin("example_mail", sample=True)
     with pytest.raises(sqlite3.IntegrityError):
         asyncio.run(kit.run(ctx, build_mail_job(ctx, Mailroom())))
     allow_receipt_writes(tmp_path / "ledger.sqlite3", "run")
@@ -214,7 +215,9 @@ def test_an_abandoned_run_is_closed_charged_and_receipted(
         "abandoned",
         750_000,
     )
-    assert receipt["sample"] is None  # the ledger does not know; the receipt does not guess
+    assert receipt["sample"] is True  # stored with the run
+    # Only the lost process knew these; the receipt signs them as unknown, not as empty.
+    assert (receipt["toolCalls"], receipt["applied"], receipt["unfinished"]) == (None, None, None)
     assert_receipt_valid(receipt, signer.public_pem)
     clock.advance(timedelta(days=1))
     assert kit.begin("example_mail").run_id != ctx.run_id
@@ -230,3 +233,53 @@ def test_a_run_another_process_closed_meanwhile_is_left_alone(
     later = T0 + 2 * ABANDON_AFTER
     assert close_abandoned_runs(ledger=ledger, signer=signer, now=later) == []
     assert ledger.get_run(ctx.run_id).outcome == "success"
+
+
+def test_a_run_open_for_exactly_abandon_after_is_still_live(ledger: Ledger, signer: Signer) -> None:
+    clock = FixedClock(T0)
+    kit = Runner(
+        ledger=ledger, signer=signer, clock=clock, budget=BUDGET, engine=ScriptedEngine([])
+    )
+    ctx = kit.begin("example_mail")
+    assert close_abandoned_runs(ledger=ledger, signer=signer, now=T0 + ABANDON_AFTER) == []
+    assert ledger.get_run(ctx.run_id).ended_at is None
+    [receipt] = close_abandoned_runs(
+        ledger=ledger, signer=signer, now=T0 + ABANDON_AFTER + timedelta(seconds=1)
+    )
+    assert receipt["runId"] == ctx.run_id
+
+
+def test_the_time_limit_is_well_under_abandon_after() -> None:
+    assert RUN_TIME_LIMIT * 2 <= ABANDON_AFTER
+
+
+class StalledEngine(ScriptedEngine):
+    async def run(self, job: Job, guard: ToolGuard, *, budget_micros: int) -> EngineRun:
+        guard.check("read_inbox")
+        await asyncio.sleep(30)
+        return EngineRun("success", 0, 0)  # pragma: no cover - the time limit stops it first
+
+
+def test_a_run_past_its_time_limit_ends_as_timeout_with_its_receipt(
+    ledger: Ledger, signer: Signer
+) -> None:
+    kit = Runner(
+        ledger=ledger,
+        signer=signer,
+        clock=FixedClock(T0),
+        budget=BUDGET,
+        engine=StalledEngine([]),
+        time_limit=timedelta(milliseconds=50),
+    )
+    ctx = kit.begin("example_mail")
+    result = asyncio.run(kit.run(ctx, build_mail_job(ctx, Mailroom())))
+    run = ledger.get_run(ctx.run_id)
+    assert (result.outcome, run.outcome) == ("timeout", "timeout")
+    # The engine stopped before it reported its cost, so the run is charged its reservation.
+    assert run.cost_micros == BUDGET.reserve_micros
+    [receipt] = ledger.receipts("example-shop", kind="run")
+    assert (receipt["outcome"], receipt["toolCalls"]) == (
+        "timeout",
+        [{"tool": "read_inbox", "allowed": True}],
+    )
+    assert_receipt_valid(receipt, signer.public_pem)

@@ -62,11 +62,19 @@ It is the code behind the studio's line "One agent, one job, one week".
      before any job code sees it.
    - A change is marked applied in the same ledger write that stores its signed action receipt, and a run is ended in
      the same write that stores its run receipt. A refusal and the status it sets are one write too.
+   - A run has a time limit of 30 minutes (`RUN_TIME_LIMIT`). The runner stops an engine still running at the limit
+     and ends the run as `timeout`, charged its reservation (the engine never reported its cost), with a receipt of
+     the tool calls made so far. An apply pass claims no new change past the limit: the rest stay approved, are
+     reported as not reached, and the run ends as `timeout`. An applier call already under way is not interrupted.
    - A run whose receipt could not be written stays open, and its reservation keeps counting against that day's cap.
-     The next run or apply pass of the business closes any run open for more than two hours (`ABANDON_AFTER`) as
-     `abandoned`: it charges the whole reservation as spend, since the real cost is unknown, and signs a run receipt
-     whose `sample`, `toolCalls`, `applied` and `unfinished` are null because only the lost process knew them. The
-     charge holds the day's cap just as the reservation did; the gain is a closed run, recorded spend and a receipt.
+     The next run or apply pass of the business closes any run open for more than two hours (`ABANDON_AFTER`, four
+     times the time limit) as `abandoned`: it charges the whole reservation as spend, since the real cost is unknown,
+     and signs a run receipt with the run's stored `sample` label and with `toolCalls`, `applied` and `unfinished`
+     null, because only the lost process knew them. The charge holds the day's cap just as the reservation did; the
+     gain is a closed run, recorded spend and a receipt.
+   - Once a run has ended, nothing more is written into it: staging a change, recording a refusal or a flag, and an
+     apply pass's claim all fail with `RunEnded`, checked in the same write. A late process fails loudly instead of
+     writing what no receipt covers.
    - When the applier returns a result the receipt cannot carry (not a JSON object, a float, nested too deep), its
      side effect has already happened. The change is applied, its receipt has `"result": null` and a
      `resultNotRecorded` reason that does not repeat the result, and the apply pass names it to the owner.

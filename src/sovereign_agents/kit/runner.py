@@ -16,6 +16,8 @@ business closes it as abandoned once it has been open for ``ABANDON_AFTER``.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -28,8 +30,13 @@ from .job import Job, RunContext
 from .ledger import Ledger, WrongStatus, new_id
 from .receipts import Signer, issue_receipt
 
-# How long a run may stay open before the next run of its business closes it as abandoned.
-# Longer than any real run: the engine stops a run at its spend cap, which takes minutes.
+# How long a run may take. The runner stops the engine at this limit and ends the run as
+# "timeout"; the apply pass claims no new change past it.
+RUN_TIME_LIMIT = timedelta(minutes=30)
+# How long a run may stay open before the next run of its business closes it as abandoned:
+# four times RUN_TIME_LIMIT, so a live run has ended (or, for an apply pass, stopped claiming)
+# long before. Only a single applier call that hangs for over 90 minutes is still live then;
+# its action receipt is still stored, and its pass then fails loudly ending its run.
 ABANDON_AFTER = timedelta(hours=2)
 
 
@@ -156,7 +163,7 @@ def close_abandoned_runs(
                         ledger=ledger,
                         signer=signer,
                         run_id=run.run_id,
-                        sample=None,
+                        sample=run.sample,
                         tool_calls=None,
                         now=now,
                         applied=None,
@@ -177,12 +184,14 @@ class Runner:
         clock: Clock,
         budget: RunBudget,
         engine: Engine,
+        time_limit: timedelta = RUN_TIME_LIMIT,
     ) -> None:
         self._ledger = ledger
         self._signer = signer
         self._clock = clock
         self._budget = budget
         self._engine = engine
+        self._time_limit = time_limit
 
     def begin(self, job_name: str, *, sample: bool = False) -> RunContext:
         """Open a run for the signer's business, or raise ``DayCapReached``.
@@ -200,19 +209,37 @@ class Runner:
             now=self._clock.now(),
             reserve_micros=self._budget.reserve_micros,
             day_cap_micros=self._budget.day_cap_micros,
+            sample=sample,
         )
         return RunContext(run_id, self._signer.business, self._ledger, self._clock, sample=sample)
+
+    async def _run_engine(self, job: Job, guard: ToolGuard) -> EngineRun:
+        # asyncio.wait, not wait_for: a TimeoutError the engine raises itself stays its own
+        # error, and only the limit makes a "timeout".
+        task = asyncio.ensure_future(
+            self._engine.run(job, guard, budget_micros=self._budget.run_cap_micros)
+        )
+        done, _ = await asyncio.wait({task}, timeout=self._time_limit.total_seconds())
+        if task in done:
+            return task.result()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        limit_ms = int(self._time_limit.total_seconds() * 1000)
+        return EngineRun("timeout", self._budget.reserve_micros, limit_ms)
 
     async def run(self, ctx: RunContext, job: Job) -> RunResult:
         """Run ``job`` in the open run ``ctx``, then close it and sign its receipt.
 
         When the engine raises, the run is still closed (outcome ``error: <type>``) and
-        receipted, and the error is raised again.
+        receipted, and the error is raised again. When the engine is still running at the time
+        limit, it is stopped and the run is closed as ``timeout``, charged its reservation (the
+        engine never reported its cost), and receipted with the tool calls made so far.
         """
         guard = ToolGuard(self._engine.tool_names(job.tools), on_deny=ctx.record_refusal)
         failure: Exception | None = None
         try:
-            report = await self._engine.run(job, guard, budget_micros=self._budget.run_cap_micros)
+            report = await self._run_engine(job, guard)
         except Exception as exc:
             failure = exc
             report = EngineRun(f"error: {type(exc).__name__}", 0, 0)

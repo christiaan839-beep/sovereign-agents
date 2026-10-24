@@ -18,7 +18,7 @@ from sovereign_agents.kit.clock import FixedClock
 from sovereign_agents.kit.gates import APPROVAL, CAPS, EXPIRY, INPUT, TERMINAL
 from sovereign_agents.kit.ledger import Change, Ledger, PayloadTooDeep
 from sovereign_agents.kit.receipts import Signer, load_signer, new_keys
-from sovereign_agents.kit.runner import RunBudget, Runner
+from sovereign_agents.kit.runner import ABANDON_AFTER, RunBudget, Runner
 from sovereign_agents.kit.testing import ScriptedCall, ScriptedEngine, assert_receipt_valid
 from tests.helpers import finishes_within, refuse_receipt_writes
 from tests.kit.mail_job import MailApplier, Mailroom, OrderCaps, build_mail_job
@@ -533,3 +533,55 @@ def test_the_result_signed_is_the_copy_that_was_checked(rig: Rig) -> None:
     assert "resultNotRecorded" not in action
     assert report.applied == ((change_id, action["id"]),)
     assert_receipt_valid(action, rig.signer.public_pem)
+
+
+@dataclass
+class ClockPushingApplier(EchoApplier):
+    """Applies a change and moves the clock on by ``step``, as a slow connector would."""
+
+    clock: FixedClock = field(default_factory=lambda: FixedClock(T0))
+    step: timedelta = timedelta(0)
+
+    def apply(self, change: Change) -> dict[str, Any]:
+        self.clock.advance(self.step)
+        return super().apply(change)
+
+
+def test_the_apply_pass_stops_claiming_past_its_time_limit(rig: Rig) -> None:
+    first = _stage_deep(rig, {"deep": []}, key="1" * 64)
+    second = _stage_deep(rig, {"deep": []}, key="2" * 64)
+    applier = ClockPushingApplier(clock=rig.clock, step=timedelta(minutes=31))
+    report = apply_approved(
+        ledger=rig.ledger,
+        signer=rig.signer,
+        clock=rig.clock,
+        appliers={"deep": applier},
+        time_limit=timedelta(minutes=30),
+    )
+    assert applier.done == [first]
+    assert [c for c, _ in report.applied] == [first]
+    assert report.deferred == (second,)
+    assert rig.ledger.get_change(second).status == "approved"
+    assert (report.receipt["outcome"], report.receipt["applied"]) == ("timeout", [first])
+    assert_receipt_valid(report.receipt, rig.signer.public_pem)
+    later = _apply_deep(rig, EchoApplier())  # the next pass takes it
+    assert [c for c, _ in later.applied] == [second]
+
+
+def test_the_apply_pass_closes_runs_abandoned_before_it(rig: Rig) -> None:
+    rig.ledger.begin_run(
+        run_id="run-lost",
+        business="example-shop",
+        job="example_mail",
+        kind="agent",
+        engine="test-engine",
+        now=T0,
+        reserve_micros=750_000,
+        day_cap_micros=None,
+    )
+    rig.clock.advance(ABANDON_AFTER + timedelta(seconds=1))
+    _apply_deep(rig, EchoApplier())
+    lost = rig.ledger.get_run("run-lost")
+    assert (lost.outcome, lost.cost_micros) == ("abandoned", 750_000)
+    [receipt] = rig.ledger.receipts("example-shop", kind="run", subject_id="run-lost")
+    assert_receipt_valid(receipt, rig.signer.public_pem)

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from sovereign_matrix.verifiable_receipts import canonicalize
@@ -47,7 +48,7 @@ from .ledger import (
     new_id,
 )
 from .receipts import Signer, sign_receipt
-from .runner import close_abandoned_runs, sign_run_receipt
+from .runner import RUN_TIME_LIMIT, close_abandoned_runs, sign_run_receipt
 
 
 def pending(ledger: Ledger, business: str, clock: Clock) -> list[Change]:
@@ -89,6 +90,8 @@ class ApplyReport:
     receipt: dict[str, Any]
     # Applied changes whose applier's result is not in the receipt, each with the reason.
     unrecorded: tuple[tuple[str, str], ...] = ()
+    # Approved changes the pass did not reach before its time limit; still approved.
+    deferred: tuple[str, ...] = ()
 
 
 def _action_body(
@@ -156,6 +159,7 @@ def apply_approved(
     clock: Clock,
     appliers: Mapping[str, Applier],
     sample: bool = False,
+    time_limit: timedelta = RUN_TIME_LIMIT,
 ) -> ApplyReport:
     """Apply every approved change of the signer's business that passes the gates.
 
@@ -163,7 +167,10 @@ def apply_approved(
     left approved and reported as skipped. ``unfinished`` lists the changes left
     ``applying`` when the pass ends: claimed by another pass still at work, or by a pass that
     stopped part way. When an applier raises, the run is still closed (outcome
-    ``error: <type>``) and receipted, and the error is raised again.
+    ``error: <type>``) and receipted, and the error is raised again. Past ``time_limit`` the
+    pass claims nothing more: the changes it has not reached stay approved, are reported as
+    ``deferred``, and the run ends as ``timeout``. A call to an applier already under way is
+    not interrupted.
     """
     business = signer.business
     started = clock.now()
@@ -178,14 +185,19 @@ def apply_approved(
         now=started,
         reserve_micros=0,
         day_cap_micros=None,
+        sample=sample,
     )
     applied: list[tuple[str, str]] = []
     refused: list[tuple[str, Refusal]] = []
     skipped: list[str] = []
     unrecorded: list[tuple[str, str]] = []
+    deferred: list[str] = []
     outcome = "success"
     try:
         for change in ledger.changes(business, status="approved"):
+            if clock.now() - started >= time_limit:
+                deferred.append(change.change_id)
+                continue
             applier = appliers.get(change.job)
             if applier is None:
                 skipped.append(change.change_id)
@@ -213,7 +225,9 @@ def apply_approved(
                 continue
             assert approval is not None  # check_apply refuses a change without one
             try:
-                ledger.claim(change.change_id, approval_id=approval.approval_id, now=now)
+                ledger.claim(
+                    change.change_id, approval_id=approval.approval_id, now=now, run_id=run_id
+                )
             except WrongStatus:
                 continue  # another pass claimed it after this one read it
             returned = applier.apply(change)
@@ -233,6 +247,8 @@ def apply_approved(
                 now=now,
             )
             applied.append((change.change_id, str(receipt["id"])))
+        if deferred:
+            outcome = "timeout"
     except BaseException as exc:
         outcome = f"error: {type(exc).__name__}"
         raise
@@ -265,4 +281,5 @@ def apply_approved(
         tuple(unfinished),
         run_receipt,
         tuple(unrecorded),
+        tuple(deferred),
     )
