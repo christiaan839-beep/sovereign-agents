@@ -1,6 +1,8 @@
 # Copyright 2026 Christiaan de Wet / Sovereign Matrix
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -191,6 +193,37 @@ def test_an_edited_receipt_fails_verification(tmp_path: Path, field: str, value:
     assert_receipt_rejected(edited, signer.public_pem)
     canonical_edited = dict(receipt, canonical=receipt["canonical"].replace("77000", "77001"))
     assert_receipt_rejected(canonical_edited, signer.public_pem)
+    ledger.close()
+
+
+def test_a_receipt_with_an_empty_content_hash_fails_verification(tmp_path: Path) -> None:
+    # The signature still verifies; only contentHash is emptied. A present contentHash must
+    # be the hash of the canonical, so "" is a mismatch, not an absent field.
+    new_keys(tmp_path / "keys")
+    signer = load_signer("example-shop", tmp_path / "keys")
+    ledger = Ledger(tmp_path / "ledger.sqlite3")
+    receipt = issue_receipt(
+        ledger=ledger, signer=signer, kind="run", subject_id="run-1", body={}, now=T0
+    )
+    emptied = dict(receipt, contentHash="")
+    result = verify(emptied, signer.public_pem)
+    assert "contentHash mismatch" in (result.reason or "")
+    assert_receipt_rejected(emptied, signer.public_pem)
+    ledger.close()
+
+
+@pytest.mark.parametrize("body", [{}, {"contentHash": ""}, {"note": ""}])
+def test_the_kit_never_writes_an_empty_content_hash(tmp_path: Path, body: dict[str, str]) -> None:
+    new_keys(tmp_path / "keys")
+    signer = load_signer("example-shop", tmp_path / "keys")
+    ledger = Ledger(tmp_path / "ledger.sqlite3")
+    receipt = issue_receipt(
+        ledger=ledger, signer=signer, kind="run", subject_id="run-1", body=body, now=T0
+    )
+    digest = hashlib.sha256(receipt["canonical"].encode("utf-8")).hexdigest()
+    assert receipt["contentHash"] == f"sha256:{digest}"
+    assert "contentHash" not in json.loads(receipt["canonical"])
+    assert ledger.receipts("example-shop") == [receipt]
     ledger.close()
 
 
