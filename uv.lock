@@ -1231,7 +1231,7 @@ requires-dist = [
     { name = "claude-agent-sdk", specifier = "==0.2.168" },
     { name = "cryptography", specifier = "==50.0.2" },
     { name = "jsonschema", specifier = "==4.26.0" },
-    { name = "sovereign-matrix-verifiable-receipts", git = "https://github.com/christiaan839-beep/verifiable-receipts?subdirectory=packages%2Fverifiable-receipts-py&rev=fd2390b5cd30fb3c31c41810195ab7ec5ed51702" },
+    { name = "sovereign-matrix-verifiable-receipts", git = "https://github.com/christiaan839-beep/verifiable-receipts?subdirectory=packages%2Fverifiable-receipts-py&rev=24f5c4780dba7c4f76b159b7f7844e17d0226cd6" },
 ]
 
 [package.metadata.requires-dev]
@@ -1247,7 +1247,7 @@ dev = [
 [[package]]
 name = "sovereign-matrix-verifiable-receipts"
 version = "0.2.1"
-source = { git = "https://github.com/christiaan839-beep/verifiable-receipts?subdirectory=packages%2Fverifiable-receipts-py&rev=fd2390b5cd30fb3c31c41810195ab7ec5ed51702#fd2390b5cd30fb3c31c41810195ab7ec5ed51702" }
+source = { git = "https://github.com/christiaan839-beep/verifiable-receipts?subdirectory=packages%2Fverifiable-receipts-py&rev=24f5c4780dba7c4f76b159b7f7844e17d0226cd6#24f5c4780dba7c4f76b159b7f7844e17d0226cd6" }
 dependencies = [
     { name = "cryptography" },
 ]

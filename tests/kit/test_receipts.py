@@ -1,15 +1,18 @@
 # Copyright 2026 Christiaan de Wet / Sovereign Matrix
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
 import hashlib
 import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from sovereign_agents.kit.ledger import Ledger
 from sovereign_agents.kit.receipts import (
@@ -171,6 +174,79 @@ def test_a_float_never_reaches_a_receipt(tmp_path: Path) -> None:
         )
     assert ledger.receipts("example-shop") == []
     ledger.close()
+
+
+def _nested(depth: int) -> list[Any]:
+    """A list nested ``depth`` deep: ``[]`` is 1, ``[[]]`` is 2."""
+    value: list[Any] = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
+def _sign_by_hand(body: dict[str, Any], private_key: Ed25519PrivateKey) -> dict[str, Any]:
+    """A v2 receipt for ``body``, signed without the signer's checks on the body."""
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    data = canonical.encode("utf-8")
+    signature = base64.b64encode(private_key.sign(data)).decode("ascii")
+    return {
+        **body,
+        "canonical": canonical,
+        "contentHash": f"sha256:{hashlib.sha256(data).hexdigest()}",
+        "signature": f"v2={signature}",
+    }
+
+
+@pytest.mark.parametrize("depth", [64, 65])
+def test_a_receipt_nested_deeper_than_64_is_rejected(tmp_path: Path, depth: int) -> None:
+    # The receipt object is one level, so a field that nests depth - 1 lists makes it depth
+    # deep. VAOS 2.0 section 7.2 sets the limit at 64.
+    new_keys(tmp_path / "keys")
+    signer = load_signer("example-shop", tmp_path / "keys")
+    receipt = _sign_by_hand({"id": "rcp-deep", "deep": _nested(depth - 1)}, signer.private_key)
+    if depth <= 64:
+        assert_receipt_valid(receipt, signer.public_pem)
+    else:
+        assert_receipt_rejected(receipt, signer.public_pem, "receipt nesting deeper than 64")
+
+
+@pytest.mark.parametrize("depth", [64, 65])
+def test_the_kit_never_signs_a_receipt_nested_deeper_than_64(tmp_path: Path, depth: int) -> None:
+    new_keys(tmp_path / "keys")
+    signer = load_signer("example-shop", tmp_path / "keys")
+    ledger = Ledger(tmp_path / "ledger.sqlite3")
+    body = {"deep": _nested(depth - 1)}
+    if depth <= 64:
+        receipt = issue_receipt(
+            ledger=ledger, signer=signer, kind="run", subject_id="run-1", body=body, now=T0
+        )
+        assert_receipt_valid(receipt, signer.public_pem)
+    else:
+        with pytest.raises(ValueError, match="nesting deeper than 64"):
+            issue_receipt(
+                ledger=ledger, signer=signer, kind="run", subject_id="run-1", body=body, now=T0
+            )
+        assert ledger.receipts("example-shop") == []
+    ledger.close()
+
+
+def test_a_receipt_under_a_small_order_key_is_rejected() -> None:
+    # The identity point (y = 1) is a small-order key: under it the signature with R the
+    # identity and S = 0 verifies every message, since [S]B = R + [k]A for any k.
+    identity = bytes([1]) + bytes(31)
+    public_pem = Ed25519PublicKey.from_public_bytes(identity).public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    body = {"id": "rcp-forged", "business": "example-shop", "totalCents": 77_000}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    signature = base64.b64encode(identity + bytes(32)).decode("ascii")
+    receipt = {
+        **body,
+        "canonical": canonical,
+        "contentHash": f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}",
+        "signature": f"v2={signature}",
+    }
+    assert_receipt_rejected(receipt, public_pem, "public key is a small-order point")
 
 
 @pytest.mark.parametrize(
