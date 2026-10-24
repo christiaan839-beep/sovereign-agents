@@ -8,12 +8,18 @@ channels, on a staged change that has not expired. The apply pass is a run of it
 ledger. For each approved change it checks, in order, the expiry, the approval (a yes recorded
 by the host for this very change and not yet used) and the job's caps as they stand now. A
 change that passes is claimed before anything is done: in one ledger transaction its yes is
-used up and it becomes ``applying``. Only then does its job's applier carry it out; it is
-marked applied and gets a signed action receipt. A change another pass has claimed is left
+used up and it becomes ``applying``; a change whose action receipt could not be signed (a
+payload nested too deep, from a ledger written before staging checked) is refused by the
+input gate first. Only then does its job's applier carry it out; it is marked applied and
+gets a signed action receipt. When the applier returns a result the receipt cannot carry (a
+float, or nested too deep), the side effect has happened, so the change is still applied and
+receipted: ``result`` is null and ``resultNotRecorded`` says why. A change another pass has
+claimed is left
 alone, so two passes at once apply it once. A change that fails a gate is refused or expired,
 never applied, and the refusal is recorded. The pass always ends its run with a signed run
-receipt, also when an applier fails; a change it claimed and could not finish stays
-``applying``, is listed as unfinished, and is never applied again by the core.
+receipt, also when an applier raises; a change it claimed whose applier raised (so whether
+the side effect happened is unknown) stays ``applying``, is listed as unfinished, and is
+never applied again by the core.
 """
 
 from __future__ import annotations
@@ -25,9 +31,9 @@ from typing import Any
 from sovereign_matrix.verifiable_receipts import canonicalize
 
 from .clock import Clock, iso
-from .gates import EXPIRY, HOST_CHANNELS, Refusal, check_apply
+from .gates import EXPIRY, HOST_CHANNELS, INPUT, Refusal, check_apply
 from .job import Applier
-from .ledger import Approval, Change, Ledger, WrongStatus, new_id
+from .ledger import ACTION_FIELD_MAX_NESTING, Approval, Change, Ledger, WrongStatus, nesting, new_id
 from .receipts import Signer, issue_receipt
 from .runner import sign_run_receipt
 
@@ -93,6 +99,43 @@ def _action_body(
     }
 
 
+def _unsignable(body: Mapping[str, Any]) -> bool:
+    try:
+        canonicalize(body)
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
+def _signing_refusal(body: Mapping[str, Any]) -> Refusal | None:
+    """A refusal when the action receipt for ``body`` (with an empty result) cannot be signed."""
+    if _unsignable(body):
+        return Refusal(INPUT, "the payload cannot be signed in an action receipt")
+    return None
+
+
+def _recordable(body: dict[str, Any]) -> dict[str, Any]:
+    """``body``, or, when its result cannot be signed, ``body`` with the result left out.
+
+    The applier has already run, so the change is applied either way; the receipt then says
+    the result was not recorded and why, in words that do not repeat the result.
+    """
+    if not _unsignable(body):
+        return body
+    if nesting(body["result"]) > ACTION_FIELD_MAX_NESTING:
+        why = "it nests deeper than the action receipt allows"
+    else:
+        why = (
+            "it holds a value a receipt cannot carry"
+            " (a float, a lone surrogate, or a type JSON lacks)"
+        )
+    return {
+        **body,
+        "result": None,
+        "resultNotRecorded": f"the applier's result could not be signed: {why}",
+    }
+
+
 def apply_approved(
     *,
     ledger: Ledger,
@@ -135,6 +178,9 @@ def apply_approved(
             now = clock.now()
             approval = ledger.approval_for(change.change_id)
             refusal = check_apply(change, approval, applier.cap_violations(change), now)
+            if refusal is None:
+                assert approval is not None  # check_apply refuses a change without one
+                refusal = _signing_refusal(_action_body(change, approval, {}, run_id, sample))
             if refusal is not None:
                 ledger.record_refusal(
                     run_id=run_id,
@@ -157,8 +203,7 @@ def apply_approved(
             except WrongStatus:
                 continue  # another pass claimed it after this one read it
             result = applier.apply(change)
-            body = _action_body(change, approval, result, run_id, sample)
-            canonicalize(body)  # refuse a float before the ledger says applied
+            body = _recordable(_action_body(change, approval, result, run_id, sample))
             ledger.mark_applied(change.change_id, now=now)
             receipt = issue_receipt(
                 ledger=ledger,

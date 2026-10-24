@@ -5,6 +5,7 @@ import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -204,6 +205,33 @@ def test_two_businesses_may_stage_under_the_same_key(ledger: Ledger) -> None:
     assert theirs.change_id != ours
     assert [c.change_id for c in ledger.changes("biz")] == [ours]
     assert [c.change_id for c in ledger.changes("other-biz")] == [theirs.change_id]
+
+
+def _nested(depth: int) -> list[Any]:
+    """A list nested ``depth`` deep: ``[]`` is 1, ``[[]]`` is 2."""
+    value: list[Any] = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
+def test_a_payload_too_deep_for_its_action_receipt_is_refused_at_staging(ledger: Ledger) -> None:
+    # The payload is level 2 of the action receipt, so as its own level 1 it may nest 63 deep:
+    # {"deep": <63 lists>} is 64 deep and would make the receipt 65.
+    start(ledger)
+    with pytest.raises(ValueError, match="nests 64 deep; the action receipt allows 63"):
+        ledger.stage_change(
+            run_id="run-1",
+            business="biz",
+            job="job",
+            kind="order",
+            idempotency_key="d" * 64,
+            payload={"deep": _nested(63)},
+            summary="an order",
+            now=T0,
+            ttl=TTL,
+        )
+    assert ledger.changes("biz") == []
 
 
 def test_a_payload_with_a_float_is_refused(ledger: Ledger) -> None:

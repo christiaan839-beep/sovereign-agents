@@ -15,7 +15,8 @@ It holds:
 - every refusal a gate made, every flag an agent raised, and every signed receipt.
 
 What it refuses: a run the day's spend cap cannot cover (counting the reservations of runs
-still open); a payload with a float in it; a decision on a change that is not staged or has
+still open); a payload with a float in it, or nested too deep for the action receipt that
+will sign it (see ``ACTION_FIELD_MAX_NESTING``); a decision on a change that is not staged or has
 expired; a claim without an unused yes for that very change, or on a change that is not
 approved; marking a change applied that was not claimed; any status the schema does not know.
 Amounts are integers. Times come from the injected clock.
@@ -41,6 +42,34 @@ ChangeStatus = Literal["staged", "approved", "applying", "refused", "applied", "
 Decision = Literal["yes", "no"]
 RunKind = Literal["agent", "apply"]
 ReceiptKind = Literal["action", "run"]
+
+# VAOS 2.0 section 7.2: every verifier rejects a receipt nested deeper than 64.
+RECEIPT_MAX_NESTING = 64
+# The action receipt (approvals._action_body) signs a change's payload as its "action" field
+# and the applier's result as its "result" field. The receipt object is level 1, so both
+# values sit at level 2.
+ACTION_FIELD_LEVEL = 2
+# So each of them, counted as its own level 1, may nest this deep: 63. A payload of
+# {"deep": <62 nested lists>} is the deepest that fits; one more list and the receipt is 65.
+ACTION_FIELD_MAX_NESTING = RECEIPT_MAX_NESTING - (ACTION_FIELD_LEVEL - 1)
+
+
+def nesting(value: Any) -> int:
+    """How deep ``value`` nests: 0 for a scalar, 1 for a list or dict, one more for each inside."""
+    deepest = 0
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, level = stack.pop()
+        if isinstance(item, dict):
+            children: Iterable[Any] = item.values()
+        elif isinstance(item, list):
+            children = item
+        else:
+            continue
+        deepest = max(deepest, level)
+        stack.extend((child, level + 1) for child in children)
+    return deepest
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -347,8 +376,16 @@ class Ledger:
         """Stage a change, or return the one already staged under the same key.
 
         Returns the change and whether this call created it. The payload is stored as its
-        canonical JSON, which refuses floats.
+        canonical JSON, which refuses floats. A payload nested deeper than the action receipt
+        can sign (``ACTION_FIELD_MAX_NESTING``) is refused here, before anyone can approve it.
         """
+        depth = nesting(payload)
+        if depth > ACTION_FIELD_MAX_NESTING:
+            raise ValueError(
+                f"payload nests {depth} deep; the action receipt allows "
+                f"{ACTION_FIELD_MAX_NESTING}: it signs the payload at level {ACTION_FIELD_LEVEL}, "
+                f"and verifiers reject a receipt nested deeper than {RECEIPT_MAX_NESTING}"
+            )
         with self._tx() as db:
             row = db.execute(
                 "SELECT change_id FROM changes WHERE business = ? AND idempotency_key = ?",

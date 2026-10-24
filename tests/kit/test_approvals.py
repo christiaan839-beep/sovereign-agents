@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ import pytest
 
 from sovereign_agents.kit.approvals import ApplyReport, apply_approved, decide, pending
 from sovereign_agents.kit.clock import FixedClock
-from sovereign_agents.kit.gates import APPROVAL, CAPS, EXPIRY, TERMINAL
+from sovereign_agents.kit.gates import APPROVAL, CAPS, EXPIRY, INPUT, TERMINAL
 from sovereign_agents.kit.ledger import Change, Ledger
 from sovereign_agents.kit.receipts import Signer, load_signer, new_keys
 from sovereign_agents.kit.runner import RunBudget, Runner
@@ -168,25 +169,27 @@ def test_a_forged_approval_is_refused(rig: Rig, tmp_path: Path) -> None:
     assert rig.room.sent == []
 
 
-class FloatApplier(MailApplier):
+class FailingApplier(MailApplier):
     def apply(self, change: Change) -> dict[str, Any]:
-        return {"total": 1.5}
+        raise RuntimeError("the outbox is down")
 
 
 def test_an_applier_failure_still_closes_and_receipts_the_pass(rig: Rig) -> None:
+    # The applier raised, so whether its side effect happened is unknown: the change stays
+    # applying and the pass lists it as unfinished, never applying it again.
     change_id = rig.stage()
     rig.yes(change_id)
-    with pytest.raises(TypeError, match="float"):
+    with pytest.raises(RuntimeError, match="outbox is down"):
         apply_approved(
             ledger=rig.ledger,
             signer=rig.signer,
             clock=rig.clock,
-            appliers={"example_mail": FloatApplier(rig.room)},
+            appliers={"example_mail": FailingApplier(rig.room)},
         )
     assert rig.ledger.get_change(change_id).status == "applying"
     assert rig.ledger.receipts("example-shop", kind="action") == []
     pass_receipt = rig.ledger.receipts("example-shop", kind="run")[-1]
-    assert (pass_receipt["runKind"], pass_receipt["outcome"]) == ("apply", "error: TypeError")
+    assert (pass_receipt["runKind"], pass_receipt["outcome"]) == ("apply", "error: RuntimeError")
     assert (pass_receipt["applied"], pass_receipt["unfinished"]) == ([], [change_id])
     assert_receipt_valid(pass_receipt, rig.signer.public_pem)
     later = rig.apply()
@@ -260,3 +263,120 @@ def test_a_change_with_no_applier_is_skipped(rig: Rig) -> None:
     report = apply_approved(ledger=rig.ledger, signer=rig.signer, clock=rig.clock, appliers={})
     assert report.skipped == (change_id,)
     assert rig.ledger.get_change(change_id).status == "approved"
+
+
+def _nested(depth: int) -> list[Any]:
+    """A list nested ``depth`` deep: ``[]`` is 1, ``[[]]`` is 2."""
+    value: list[Any] = []
+    for _ in range(depth - 1):
+        value = [value]
+    return value
+
+
+@dataclass
+class EchoApplier:
+    """Applies a change of the "deep" job by recording it, and returns ``result``."""
+
+    result: dict[str, Any] = field(default_factory=lambda: {"ref": "done-1"})
+    done: list[str] = field(default_factory=list)
+
+    def cap_violations(self, change: Change) -> list[str]:
+        return []
+
+    def apply(self, change: Change) -> dict[str, Any]:
+        self.done.append(change.change_id)
+        return self.result
+
+
+def _stage_deep(rig: Rig, payload: dict[str, Any]) -> str:
+    rig.ledger.begin_run(
+        run_id="run-deep",
+        business="example-shop",
+        job="deep",
+        kind="agent",
+        engine="test-engine",
+        now=T0,
+        reserve_micros=0,
+        day_cap_micros=None,
+    )
+    change, _ = rig.ledger.stage_change(
+        run_id="run-deep",
+        business="example-shop",
+        job="deep",
+        kind="deep",
+        idempotency_key="e" * 64,
+        payload=payload,
+        summary="a deep change",
+        now=T0,
+        ttl=timedelta(hours=48),
+    )
+    rig.ledger.end_run("run-deep", outcome="success", cost_micros=0, duration_ms=0, now=T0)
+    rig.yes(change.change_id)
+    return change.change_id
+
+
+def _apply_deep(rig: Rig, applier: EchoApplier) -> ApplyReport:
+    return apply_approved(
+        ledger=rig.ledger, signer=rig.signer, clock=rig.clock, appliers={"deep": applier}
+    )
+
+
+def test_a_payload_at_the_depth_allowance_stages_applies_and_signs(rig: Rig) -> None:
+    # 63 deep as its own level 1, so 64 deep at level 2 of the action receipt: the limit.
+    payload = {"deep": _nested(62)}
+    change_id = _stage_deep(rig, payload)
+    applier = EchoApplier()
+    report = _apply_deep(rig, applier)
+    assert applier.done == [change_id]
+    [action] = rig.ledger.receipts("example-shop", kind="action")
+    assert action["action"] == payload
+    assert_receipt_valid(action, rig.signer.public_pem)
+    assert rig.ledger.get_change(change_id).status == "applied"
+    assert report.unfinished == ()
+
+
+def test_a_stored_payload_too_deep_to_sign_is_refused_before_it_is_applied(
+    rig: Rig, tmp_path: Path
+) -> None:
+    # A ledger written before staging checked the depth can hold such a payload.
+    change_id = _stage_deep(rig, {"deep": []})
+    with sqlite3.connect(tmp_path / "ledger.sqlite3") as db:
+        db.execute(
+            "UPDATE changes SET payload = ? WHERE change_id = ?",
+            (json.dumps({"deep": _nested(63)}), change_id),
+        )
+    applier = EchoApplier()
+    report = _apply_deep(rig, applier)
+    assert applier.done == []
+    [(refused_id, refusal)] = report.refused
+    assert (refused_id, refusal.gate) == (change_id, INPUT)
+    assert "action receipt" in refusal.reason
+    assert rig.ledger.get_change(change_id).status == "refused"
+    assert rig.ledger.receipts("example-shop", kind="action") == []
+    assert_receipt_valid(report.receipt, rig.signer.public_pem)
+
+
+@pytest.mark.parametrize(
+    ("result", "why"),
+    [
+        ({"deep": _nested(63)}, "nests deeper than the action receipt allows"),
+        ({"total": 1.5}, "holds a value a receipt cannot carry"),
+    ],
+)
+def test_a_result_too_deep_to_sign_is_receipted_as_not_recorded(
+    rig: Rig, result: dict[str, Any], why: str
+) -> None:
+    # The applier returned, so its side effect happened: the change is applied and its
+    # action receipt says the result could not be recorded, instead of leaving no receipt.
+    change_id = _stage_deep(rig, {"deep": []})
+    applier = EchoApplier(result=result)
+    report = _apply_deep(rig, applier)
+    assert applier.done == [change_id]
+    [action] = rig.ledger.receipts("example-shop", kind="action")
+    assert report.applied == ((change_id, action["id"]),)
+    assert action["result"] is None
+    assert why in action["resultNotRecorded"]
+    assert_receipt_valid(action, rig.signer.public_pem)
+    assert rig.ledger.get_change(change_id).status == "applied"
+    assert (report.unfinished, report.receipt["outcome"]) == ((), "success")
+    assert_receipt_valid(report.receipt, rig.signer.public_pem)
