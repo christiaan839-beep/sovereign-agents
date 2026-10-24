@@ -17,6 +17,7 @@ from sovereign_agents.kit import (
     PRIVATE_KEY_FILE,
     PUBLIC_KEY_FILE,
     TERMINAL,
+    ApplyReport,
     ChangeExpired,
     Clock,
     DayCapReached,
@@ -24,6 +25,7 @@ from sovereign_agents.kit import (
     KeyFileError,
     Ledger,
     LedgerError,
+    PayloadTooDeep,
     Runner,
     Signer,
     SystemClock,
@@ -193,6 +195,9 @@ def _approve(args: argparse.Namespace, ctx: Context) -> int:
             except ChangeExpired:
                 say("It expired before your answer; nothing will be done.\n")
                 continue
+            except PayloadTooDeep:
+                say("It is nested too deep to sign in a receipt; nothing will be done.\n")
+                continue
             say("Yes.\n" if answer in ("y", "yes") else "No; nothing will be done.\n")
         report = apply_approved(
             ledger=ledger,
@@ -203,17 +208,30 @@ def _approve(args: argparse.Namespace, ctx: Context) -> int:
         )
     finally:
         ledger.close()
-    for change_id, receipt_id in report.applied:
-        say(f"Applied {change_id}; receipt {receipt_id}\n")
-    for change_id, refusal in report.refused:
-        say(f"Not applied {change_id}: {refusal}\n")
-    for change_id in report.unfinished:
-        say(
-            f"Not finished {change_id}: an apply pass claimed it and did not mark it applied;"
-            " the kit does not apply it again on its own.\n"
-        )
-    say(f"Apply pass {report.run_id}; receipt {report.receipt['id']}\n")
+    for line in apply_report_lines(report):
+        say(line + "\n")
     return 0
+
+
+def apply_report_lines(report: ApplyReport) -> list[str]:
+    """What an apply pass did, a line each, for the owner."""
+    lines = [
+        f"Applied {change_id}; receipt {receipt_id}" for change_id, receipt_id in report.applied
+    ]
+    lines += [f"Result not recorded for {change_id}: {why}" for change_id, why in report.unrecorded]
+    lines += [f"Not applied {change_id}: {refusal}" for change_id, refusal in report.refused]
+    lines += [
+        f"Not finished {change_id}: an apply pass claimed it and did not mark it applied;"
+        " the kit does not apply it again on its own."
+        for change_id in report.unfinished
+    ]
+    lines += [
+        f"Not reached {change_id}: the apply pass reached its time limit;"
+        " it stays approved for the next pass."
+        for change_id in report.deferred
+    ]
+    lines.append(f"Apply pass {report.run_id}; receipt {report.receipt['id']}")
+    return lines
 
 
 def _receipts_verify(args: argparse.Namespace, ctx: Context) -> int:

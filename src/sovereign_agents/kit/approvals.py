@@ -4,32 +4,51 @@
 """The owner's yes or no, and the host's apply pass.
 
 What it guarantees: a decision is recorded only through one of the host's own approval
-channels, on a staged change that has not expired. The apply pass is a run of its own in the
-ledger. For each approved change it checks, in order, the expiry, the approval (a yes recorded
-by the host for this very change and not yet used) and the job's caps as they stand now. A
-change that passes is claimed before anything is done: in one ledger transaction its yes is
-used up and it becomes ``applying``. Only then does its job's applier carry it out; it is
-marked applied and gets a signed action receipt. A change another pass has claimed is left
-alone, so two passes at once apply it once. A change that fails a gate is refused or expired,
-never applied, and the refusal is recorded. The pass always ends its run with a signed run
-receipt, also when an applier fails; a change it claimed and could not finish stays
-``applying``, is listed as unfinished, and is never applied again by the core.
+channels, on a staged change that has not expired; a yes on a payload its action receipt could
+not sign is refused. The apply pass is a run of its own in the ledger. For each approved change
+it checks, in order, that the payload can be signed in an action receipt (a ledger written
+before staging checked the depth can hold one that cannot), the expiry, the approval (a yes
+recorded by the host for this very change and not yet used) and the job's caps as they stand
+now. A change that fails a check is refused or expired, never applied, and the refusal is
+recorded in the same write. A change that passes is claimed before anything is done: in one
+ledger transaction its yes is used up and it becomes ``applying``. Only then does its job's
+applier carry it out. The action receipt is signed next, and the change is marked applied and
+the receipt stored in one write. When the applier returns a result the receipt cannot carry
+(not a mapping, a float, nested too deep, cyclic), the side effect has happened, so the change
+is still applied and receipted: ``result`` is null, ``resultNotRecorded`` says why without
+repeating the result, and the report lists it as unrecorded. A change another pass has claimed
+or refused is left alone, so two passes at once apply or refuse it once.
+
+The pass always ends its run with a signed run receipt, in the same write that ends the run.
+A change it claimed and could not mark applied stays ``applying`` and is listed as unfinished:
+its applier raised, so whether the side effect happened is unknown, or its receipt could not be
+stored. The core never applies it again.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 
 from sovereign_matrix.verifiable_receipts import canonicalize
 
 from .clock import Clock, iso
-from .gates import EXPIRY, HOST_CHANNELS, Refusal, check_apply
+from .gates import EXPIRY, HOST_CHANNELS, INPUT, Refusal, check_apply
 from .job import Applier
-from .ledger import Approval, Change, Ledger, WrongStatus, new_id
-from .receipts import Signer, issue_receipt
-from .runner import sign_run_receipt
+from .ledger import (
+    ACTION_FIELD_MAX_NESTING,
+    Approval,
+    Change,
+    Ledger,
+    WrongStatus,
+    check_payload_depth,
+    nesting,
+    new_id,
+)
+from .receipts import Signer, sign_receipt
+from .runner import RUN_TIME_LIMIT, close_abandoned_runs, sign_run_receipt
 
 
 def pending(ledger: Ledger, business: str, clock: Clock) -> list[Change]:
@@ -50,6 +69,8 @@ def decide(
     """Record the owner's decision. Refuses a channel that is not one of the host's own."""
     if channel not in HOST_CHANNELS:
         raise ValueError(f"{channel!r} is not one of the host's approval channels")
+    if yes:
+        check_payload_depth(ledger.get_change(change_id).payload)
     return ledger.record_decision(
         change_id,
         decision="yes" if yes else "no",
@@ -67,10 +88,18 @@ class ApplyReport:
     skipped: tuple[str, ...]
     unfinished: tuple[str, ...]
     receipt: dict[str, Any]
+    # Applied changes whose applier's result is not in the receipt, each with the reason.
+    unrecorded: tuple[tuple[str, str], ...] = ()
+    # Approved changes the pass did not reach before its time limit; still approved.
+    deferred: tuple[str, ...] = ()
 
 
 def _action_body(
-    change: Change, approval: Approval, result: Mapping[str, Any], apply_run_id: str, sample: bool
+    change: Change,
+    approval: Approval,
+    result: dict[str, Any] | None,
+    apply_run_id: str,
+    sample: bool,
 ) -> dict[str, Any]:
     return {
         "runId": change.run_id,
@@ -81,7 +110,7 @@ def _action_body(
         "idempotencyKey": change.idempotency_key,
         "sample": sample,
         "action": change.payload,
-        "result": dict(result),
+        "result": result,
         "approval": {
             "id": approval.approval_id,
             "decision": approval.decision,
@@ -93,6 +122,36 @@ def _action_body(
     }
 
 
+def _payload_refusal(change: Change) -> Refusal | None:
+    """A refusal when the change's payload cannot be signed in its action receipt."""
+    try:
+        check_payload_depth(change.payload)
+        canonicalize(change.payload)
+    except (TypeError, ValueError):
+        return Refusal(INPUT, "the payload cannot be signed in an action receipt")
+    return None
+
+
+def _result_problem(result: dict[str, Any] | None) -> str | None:
+    """Why the applier's result (the one copy that will be signed) cannot go in the action
+    receipt, or None when it can; None for ``result`` means the applier returned no mapping.
+
+    The reason never repeats the result: the library's own messages quote the value.
+    """
+    if result is None:
+        return "it is not a JSON object"
+    if nesting(result) > ACTION_FIELD_MAX_NESTING:
+        return "it nests deeper than the action receipt allows"
+    try:
+        canonicalize({"result": result})  # the result at its level in the receipt
+    except (TypeError, ValueError):
+        return (
+            "it holds a value a receipt cannot carry"
+            " (a float, a lone surrogate, or a type JSON lacks)"
+        )
+    return None
+
+
 def apply_approved(
     *,
     ledger: Ledger,
@@ -100,6 +159,7 @@ def apply_approved(
     clock: Clock,
     appliers: Mapping[str, Applier],
     sample: bool = False,
+    time_limit: timedelta = RUN_TIME_LIMIT,
 ) -> ApplyReport:
     """Apply every approved change of the signer's business that passes the gates.
 
@@ -107,10 +167,14 @@ def apply_approved(
     left approved and reported as skipped. ``unfinished`` lists the changes left
     ``applying`` when the pass ends: claimed by another pass still at work, or by a pass that
     stopped part way. When an applier raises, the run is still closed (outcome
-    ``error: <type>``) and receipted, and the error is raised again.
+    ``error: <type>``) and receipted, and the error is raised again. Past ``time_limit`` the
+    pass claims nothing more: the changes it has not reached stay approved, are reported as
+    ``deferred``, and the run ends as ``timeout``. A call to an applier already under way is
+    not interrupted.
     """
     business = signer.business
     started = clock.now()
+    close_abandoned_runs(ledger=ledger, signer=signer, now=started)
     run_id = new_id("run")
     ledger.begin_run(
         run_id=run_id,
@@ -121,10 +185,13 @@ def apply_approved(
         now=started,
         reserve_micros=0,
         day_cap_micros=None,
+        sample=sample,
     )
     applied: list[tuple[str, str]] = []
     refused: list[tuple[str, Refusal]] = []
     skipped: list[str] = []
+    unrecorded: list[tuple[str, str]] = []
+    deferred: list[str] = []
     outcome = "success"
     try:
         for change in ledger.changes(business, status="approved"):
@@ -132,66 +199,87 @@ def apply_approved(
             if applier is None:
                 skipped.append(change.change_id)
                 continue
+            if clock.now() - started >= time_limit:
+                deferred.append(change.change_id)
+                continue
             now = clock.now()
             approval = ledger.approval_for(change.change_id)
-            refusal = check_apply(change, approval, applier.cap_violations(change), now)
+            # The payload first, so job code never sees one that cannot be signed.
+            refusal = _payload_refusal(change) or check_apply(
+                change, approval, applier.cap_violations(change), now
+            )
             if refusal is not None:
-                ledger.record_refusal(
-                    run_id=run_id,
-                    business=business,
-                    tool="apply",
-                    gate=refusal.gate,
-                    reason=refusal.reason,
-                    now=now,
-                    change_id=change.change_id,
-                )
-                if refusal.gate == EXPIRY:
-                    ledger.mark_expired(change.change_id, now)
-                else:
-                    ledger.mark_refused(change.change_id, now)
+                try:
+                    ledger.refuse_change(
+                        change.change_id,
+                        run_id=run_id,
+                        business=business,
+                        gate=refusal.gate,
+                        reason=refusal.reason,
+                        now=now,
+                        expire=refusal.gate == EXPIRY,
+                    )
+                except WrongStatus:
+                    continue  # another pass refused or claimed it after this one read it
                 refused.append((change.change_id, refusal))
                 continue
             assert approval is not None  # check_apply refuses a change without one
             try:
-                ledger.claim(change.change_id, approval_id=approval.approval_id, now=now)
+                ledger.claim(
+                    change.change_id, approval_id=approval.approval_id, now=now, run_id=run_id
+                )
             except WrongStatus:
                 continue  # another pass claimed it after this one read it
-            result = applier.apply(change)
-            body = _action_body(change, approval, result, run_id, sample)
-            canonicalize(body)  # refuse a float before the ledger says applied
-            ledger.mark_applied(change.change_id, now=now)
-            receipt = issue_receipt(
-                ledger=ledger,
-                signer=signer,
-                kind="action",
-                subject_id=change.change_id,
-                body=body,
+            returned = applier.apply(change)
+            # One copy: the one checked is the one signed.
+            result = dict(returned) if isinstance(returned, Mapping) else None
+            problem = _result_problem(result)
+            body = _action_body(change, approval, None if problem else result, run_id, sample)
+            if problem is not None:
+                body["resultNotRecorded"] = f"the applier's result could not be signed: {problem}"
+                unrecorded.append((change.change_id, body["resultNotRecorded"]))
+            receipt = sign_receipt(signer=signer, kind="action", body=body, now=now)
+            ledger.mark_applied_with_receipt(
+                change.change_id,
+                receipt_id=str(receipt["id"]),
+                business=business,
+                receipt=receipt,
                 now=now,
             )
             applied.append((change.change_id, str(receipt["id"])))
+        if deferred:
+            outcome = "timeout"
     except BaseException as exc:
         outcome = f"error: {type(exc).__name__}"
         raise
     finally:
         ended = clock.now()
         unfinished = [change.change_id for change in ledger.changes(business, status="applying")]
-        ledger.end_run(
-            run_id,
-            outcome=outcome,
-            cost_micros=0,
-            duration_ms=int((ended - started).total_seconds() * 1000),
-            now=ended,
-        )
-        run_receipt = sign_run_receipt(
-            ledger=ledger,
-            signer=signer,
-            run_id=run_id,
-            sample=sample,
-            tool_calls=[],
-            now=ended,
-            applied=[change_id for change_id, _ in applied],
-            unfinished=unfinished,
-        )
+        with ledger.atomic():  # the run is ended only together with its receipt
+            ledger.end_run(
+                run_id,
+                outcome=outcome,
+                cost_micros=0,
+                duration_ms=int((ended - started).total_seconds() * 1000),
+                now=ended,
+            )
+            run_receipt = sign_run_receipt(
+                ledger=ledger,
+                signer=signer,
+                run_id=run_id,
+                sample=sample,
+                tool_calls=[],
+                now=ended,
+                applied=[change_id for change_id, _ in applied],
+                unfinished=unfinished,
+            )
     return ApplyReport(
-        run_id, tuple(applied), tuple(refused), tuple(skipped), tuple(unfinished), run_receipt
+        run_id,
+        tuple(applied),
+        tuple(refused),
+        tuple(skipped),
+        tuple(unfinished),
+        run_receipt,
+        tuple(unrecorded),
+        tuple(deferred),
     )

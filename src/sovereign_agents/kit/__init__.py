@@ -14,7 +14,7 @@ from sovereign_matrix.verifiable_receipts import VerifyResult, canonicalize
 
 from .approvals import ApplyReport, apply_approved, decide, pending
 from .clock import Clock, FixedClock, SystemClock, day_key, iso, parse_iso
-from .engine import Engine, EngineRun
+from .engine import Engine, EngineDidNotStart, EngineRun
 from .fence import MAX_FENCED_CHARS, Fence, sanitize_label
 from .gates import (
     APPROVAL,
@@ -46,8 +46,11 @@ from .ledger import (
     Ledger,
     LedgerError,
     NotFound,
+    PayloadTooDeep,
     RefusalRecord,
     Run,
+    RunEnded,
+    TransactionBroken,
     WrongStatus,
     new_id,
 )
@@ -62,6 +65,7 @@ from .receipts import (
     load_public_pem,
     load_signer,
     new_keys,
+    sign_receipt,
     verify,
     verify_all,
 )
@@ -90,6 +94,7 @@ __all__ = [
     "DayCapReached",
     "Decision",
     "Engine",
+    "EngineDidNotStart",
     "EngineRun",
     "Fence",
     "FixedClock",
@@ -99,12 +104,14 @@ __all__ = [
     "Ledger",
     "LedgerError",
     "NotFound",
+    "PayloadTooDeep",
     "Reads",
     "Refusal",
     "RefusalRecord",
     "Run",
     "RunBudget",
     "RunContext",
+    "RunEnded",
     "RunResult",
     "Runner",
     "Signer",
@@ -115,6 +122,7 @@ __all__ = [
     "ToolResult",
     "ToolSet",
     "ToolSpec",
+    "TransactionBroken",
     "VerifyResult",
     "WrongStatus",
     "apply_approved",
@@ -138,6 +146,7 @@ __all__ = [
     "parse_iso",
     "pending",
     "sanitize_label",
+    "sign_receipt",
     "sign_run_receipt",
     "usd_to_micros",
     "verify",

@@ -5,12 +5,12 @@
 // verifiable-receipts (packages/verifiable-receipts-go).
 //
 // Usage: go_verifier <ed25519.pem> <receipt.json>
-// Prints "ok" and exits 0, or prints "rejected: <reason>" and exits 1.
-// Exits 2 on a usage or file error.
+// Prints "ok" and exits 0, or prints "rejected: <reason>" and exits 1,
+// a public key the module refuses to load included. Exits 2 on a usage
+// or file error.
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 
@@ -27,18 +27,22 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
-	pub, err := vaos.LoadEd25519PublicKeyFromPEM(pemBytes)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
-	}
 	data, err := os.ReadFile(os.Args[2])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
 	}
-	var receipt vaos.Receipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
+	// The Python verifier rejects a receipt under a key it refuses to
+	// load (a small-order point, say); this one does the same.
+	pub, err := vaos.LoadEd25519PublicKeyFromPEM(pemBytes)
+	if err != nil {
+		fmt.Println("rejected:", err)
+		os.Exit(1)
+	}
+	// ParseReceipt counts the text's depth before encoding/json reads it,
+	// so a receipt nested deeper than 64 is rejected at any depth.
+	receipt, err := vaos.ParseReceipt(data)
+	if err != nil {
 		fmt.Println("rejected:", err)
 		os.Exit(1)
 	}

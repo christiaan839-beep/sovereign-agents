@@ -56,6 +56,41 @@ It is the code behind the studio's line "One agent, one job, one week".
    - Each applied action, and each run (its cost, the tools it called, what it staged, how it ended), is signed in the
      verifiable-receipts v2 format with the business's Ed25519 key.
    - Amounts are whole cents, never floats, so the signed text is byte-for-byte the same in Python, Go and JavaScript.
+   - Verifiers reject a receipt nested deeper than 64. The action receipt signs a change's payload and the applier's
+     result at level 2, so each may nest at most 63 deep. A deeper payload is refused when it is staged. A staged
+     change too deep to sign (in a ledger written before that check) cannot get a yes, and is refused at apply
+     before any job code sees it.
+   - A change is marked applied in the same ledger write that stores its signed action receipt, and a run is ended in
+     the same write that stores its run receipt. A refusal and the status it sets are one write too.
+   - A run has a time limit of 30 minutes (`RUN_TIME_LIMIT`). The runner stops an engine still running at the limit
+     and ends the run as `timeout`, charged its reservation (the engine never reported its cost), with a receipt of
+     the tool calls made so far. An apply pass claims no new change past the limit: the rest stay approved, are
+     reported as not reached, and the run ends as `timeout`. An applier call already under way is not interrupted.
+     The limit is only as good as the engine's response to cancellation: the runner cancels the engine and waits for
+     it to stop, so an engine that ignores cancellation holds the run open. Whatever the engine does while it stops
+     (returns, or raises from its own cleanup, as the SDK's anyio generator can), the run is a `timeout`, and a
+     cleanup error is logged.
+   - A run whose engine raises is ended as `error: <type>` and charged its whole reservation: it may have spent money
+     before it failed, and did not report how much. The exception is an engine that failed before any model call (a
+     missing API key): it raises `EngineDidNotStart`, and its run is charged nothing.
+   - A run whose receipt could not be written stays open, and its reservation keeps counting against that day's cap.
+     The next run or apply pass of the business closes any run open for more than two hours (`ABANDON_AFTER`, four
+     times the time limit) as `abandoned`: it charges the whole reservation as spend, since the real cost is unknown,
+     and signs a run receipt with the run's stored `sample` label and with `toolCalls`, `applied` and `unfinished`
+     null, because only the lost process knew them. The charge holds the day's cap just as the reservation did; the
+     gain is a closed run, recorded spend and a receipt.
+   - An applier call that hangs for longer than `ABANDON_AFTER` can outlive its run: the run is closed as abandoned
+     with `"applied": null`, and the change's action receipt, stored when the call returns, names that run as its
+     `applyRunId`. The run receipt's null means unknown, not missing, and the action receipt verifies on its own.
+   - Once a run has ended, nothing more is written into it: staging a change, recording a refusal or a flag, and an
+     apply pass's claim all fail with `RunEnded`, checked in the same write. A late process fails loudly instead of
+     writing what no receipt covers.
+   - When the applier returns a result the receipt cannot carry (not a JSON object, a float, nested too deep), its
+     side effect has already happened. The change is applied, its receipt has `"result": null` and a
+     `resultNotRecorded` reason that does not repeat the result, and the apply pass names it to the owner.
+   - A change the apply pass claimed and could not mark applied stays `applying` and is listed as unfinished in the
+     pass's run receipt: its applier raised, so whether the side effect happened is unknown, or its receipt could not
+     be stored. The kit never applies it again on its own; the owner decides.
 7. **Keys are new and stay where they belong.**
    - `sovereign-agents keys new` makes each business its own Ed25519 key pair.
    - The private key never goes in the repo, a log or the model's context. The hosted version keeps it in the host's
@@ -112,8 +147,9 @@ Guardrails run again at apply time against the caps in force then, as commerce-a
 3. The agent stages changes through the job's stage tools. Each staged change is checked against the gates and the caps.
 4. The run ends. The kit signs a run receipt, and the staged changes wait for the owner.
 5. The owner says yes or no to each one. Nothing is sent before then.
-6. On a yes, the host re-checks the expiry, the approval and the caps, claims the change, applies it through the
-   connector, and signs a receipt for the action.
+6. On a yes, the host re-checks that the payload can be signed, the expiry, the approval and the caps, claims the
+   change, applies it through the connector, and signs a receipt for the action, stored in the same write that marks
+   the change applied.
 
 ## The four jobs
 

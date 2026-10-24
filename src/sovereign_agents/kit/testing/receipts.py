@@ -75,12 +75,22 @@ def assert_receipt_valid(receipt: Mapping[str, Any], public_pem: bytes) -> None:
         assert go[0], go[1]
 
 
-def assert_receipt_rejected(receipt: Mapping[str, Any], public_pem: bytes) -> None:
-    """Both verifiers reject the receipt (the Go one when go is on PATH)."""
-    assert not verify_v2_receipt(receipt, public_pem).ok
+def assert_receipt_rejected(
+    receipt: Mapping[str, Any], public_pem: bytes, reason: str | None = None
+) -> None:
+    """Both verifiers reject the receipt (the Go one when go is on PATH).
+
+    When ``reason`` is given, each verifier's reason contains it.
+    """
+    result = verify_v2_receipt(receipt, public_pem)
+    assert not result.ok
+    if reason is not None:
+        assert reason in (result.reason or ""), result.reason
     go = go_verify(receipt, public_pem)
     if go is not None:
         assert not go[0], go[1]
+        if reason is not None:
+            assert reason in go[1], go[1]
 
 
 def assert_ledger_receipts_valid(ledger_path: Path, public_pems: Sequence[bytes]) -> None:

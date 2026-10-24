@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from sovereign_agents.cli import main
+from sovereign_agents.cli import apply_report_lines, main
 from sovereign_agents.config import KitConfig
 from sovereign_agents.kit import (
     PRIVATE_KEY_FILE,
+    ApplyReport,
     Engine,
     FixedClock,
     Ledger,
@@ -179,3 +180,40 @@ def test_receipts_verify_reports_each_receipt(tmp_path: Path) -> None:
     assert f"{good['id']}: ok" in out
     assert "rcp-edited: FAILED" in out
     assert "2 receipt(s), 1 failed." in out
+
+
+def test_the_apply_summary_names_a_result_that_was_not_recorded() -> None:
+    report = ApplyReport(
+        run_id="run-1",
+        applied=(("chg-1", "rcp-1"),),
+        refused=(),
+        skipped=(),
+        unfinished=(),
+        receipt={"id": "rcp-run"},
+        unrecorded=(
+            ("chg-1", "the applier's result could not be signed: it is not a JSON object"),
+        ),
+    )
+    assert apply_report_lines(report) == [
+        "Applied chg-1; receipt rcp-1",
+        "Result not recorded for chg-1: the applier's result could not be signed:"
+        " it is not a JSON object",
+        "Apply pass run-1; receipt rcp-run",
+    ]
+
+
+def test_the_apply_summary_names_changes_past_the_time_limit() -> None:
+    report = ApplyReport(
+        run_id="run-1",
+        applied=(),
+        refused=(),
+        skipped=(),
+        unfinished=(),
+        receipt={"id": "rcp-run"},
+        deferred=("chg-2",),
+    )
+    assert apply_report_lines(report) == [
+        "Not reached chg-2: the apply pass reached its time limit; it stays approved for the"
+        " next pass.",
+        "Apply pass run-1; receipt rcp-run",
+    ]

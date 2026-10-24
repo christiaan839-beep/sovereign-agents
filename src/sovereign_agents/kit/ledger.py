@@ -15,10 +15,13 @@ It holds:
 - every refusal a gate made, every flag an agent raised, and every signed receipt.
 
 What it refuses: a run the day's spend cap cannot cover (counting the reservations of runs
-still open); a payload with a float in it; a decision on a change that is not staged or has
+still open); a payload with a float in it, or nested too deep for the action receipt that
+will sign it (see ``ACTION_FIELD_MAX_NESTING``); a decision on a change that is not staged or has
 expired; a claim without an unused yes for that very change, or on a change that is not
 approved; marking a change applied that was not claimed; any status the schema does not know.
-Amounts are integers. Times come from the injected clock.
+A status and the record that explains it are one write: a change becomes applied together with
+its action receipt, and refused or expired together with its refusal; ``atomic`` joins other
+writes the same way. Amounts are integers. Times come from the injected clock.
 """
 
 from __future__ import annotations
@@ -42,6 +45,61 @@ Decision = Literal["yes", "no"]
 RunKind = Literal["agent", "apply"]
 ReceiptKind = Literal["action", "run"]
 
+# VAOS 2.0 section 7.2: every verifier rejects a receipt nested deeper than 64.
+RECEIPT_MAX_NESTING = 64
+# The action receipt (approvals._action_body) signs a change's payload as its "action" field
+# and the applier's result as its "result" field. The receipt object is level 1, so both
+# values sit at level 2.
+ACTION_FIELD_LEVEL = 2
+# So each of them, counted as its own level 1, may nest this deep: 63. A payload of
+# {"deep": <62 nested lists>} is the deepest that fits; one more list and the receipt is 65.
+ACTION_FIELD_MAX_NESTING = RECEIPT_MAX_NESTING - (ACTION_FIELD_LEVEL - 1)
+
+
+class PayloadTooDeep(ValueError):
+    """A payload nested deeper than the action receipt that would sign it can carry."""
+
+
+def nesting(value: Any) -> int:
+    """How deep ``value`` nests: 0 for a scalar, 1 for a list or dict, one more for each inside.
+
+    Past ``RECEIPT_MAX_NESTING`` it stops and returns ``RECEIPT_MAX_NESTING + 1``, so a cyclic
+    value ends too. A list or dict met again at the same level is not walked again, so a value
+    that shares one many times over is walked once per level. Only ``dict`` and ``list`` count:
+    a tuple or another kind of Mapping is a leaf, which is safe because ``canonicalize`` refuses
+    both, so a value holding one is refused before it is signed.
+    """
+    deepest = 0
+    walked: set[tuple[int, int]] = set()
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, level = stack.pop()
+        if isinstance(item, dict):
+            children: Iterable[Any] = item.values()
+        elif isinstance(item, list):
+            children = item
+        else:
+            continue
+        if level > RECEIPT_MAX_NESTING:
+            return level
+        if (id(item), level) in walked:
+            continue
+        walked.add((id(item), level))
+        deepest = max(deepest, level)
+        stack.extend((child, level + 1) for child in children)
+    return deepest
+
+
+def check_payload_depth(payload: Any) -> None:
+    """Raise :class:`PayloadTooDeep` when ``payload`` nests deeper than its receipt allows."""
+    if nesting(payload) > ACTION_FIELD_MAX_NESTING:
+        raise PayloadTooDeep(
+            f"payload nests deeper than {ACTION_FIELD_MAX_NESTING}, the most the action receipt"
+            f" can sign: it signs the payload at level {ACTION_FIELD_LEVEL}, and verifiers"
+            f" reject a receipt nested deeper than {RECEIPT_MAX_NESTING}"
+        )
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
@@ -55,7 +113,8 @@ CREATE TABLE IF NOT EXISTS runs (
     outcome TEXT,
     reserved_micros INTEGER NOT NULL CHECK (reserved_micros >= 0),
     cost_micros INTEGER CHECK (cost_micros >= 0),
-    duration_ms INTEGER CHECK (duration_ms >= 0)
+    duration_ms INTEGER CHECK (duration_ms >= 0),
+    sample INTEGER CHECK (sample IN (0, 1))
 );
 CREATE TABLE IF NOT EXISTS spend (
     business TEXT NOT NULL,
@@ -134,6 +193,14 @@ class ChangeExpired(LedgerError):
     pass
 
 
+class RunEnded(LedgerError):
+    """A write into a run that has ended: what it would record would be in no receipt."""
+
+
+class TransactionBroken(LedgerError):
+    """SQLite rolled back the transaction inside ``atomic()`` itself; nothing more is written."""
+
+
 class DayCapReached(LedgerError):
     def __init__(self, committed_micros: int, cap_micros: int) -> None:
         self.committed_micros = committed_micros
@@ -158,6 +225,8 @@ class Run:
     reserved_micros: int
     cost_micros: int | None
     duration_ms: int | None
+    # Whether the run worked on a sample business; None in a ledger from before it was kept.
+    sample: bool | None
 
 
 @dataclass(frozen=True)
@@ -219,24 +288,91 @@ def _maybe_time(text: str | None) -> datetime | None:
 
 
 class Ledger:
-    def __init__(self, path: Path | str) -> None:
-        self._db = sqlite3.connect(str(path), isolation_level=None)
+    def __init__(self, path: Path | str, *, timeout: float = 5.0) -> None:
+        # ``timeout`` is how long a write waits for another connection's lock, in seconds.
+        # The journal stays SQLite's default rollback journal, not WAL: the ledger is one file
+        # that is copied whole and opened read-only (mode=ro) to check it, which WAL's -wal
+        # and -shm side files would complicate. One host process writes at a time, so the
+        # readers WAL would let through are rare, and a COMMIT they block now rolls back.
+        self._db = sqlite3.connect(str(path), isolation_level=None, timeout=timeout)
+        self._tx_depth = 0
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(SCHEMA)
+        # A ledger from before runs kept their sample label gains the column, empty (unknown).
+        if "sample" not in self._run_columns():
+            try:
+                self._db.execute(
+                    "ALTER TABLE runs ADD COLUMN sample INTEGER CHECK (sample IN (0, 1))"
+                )
+            except sqlite3.OperationalError:
+                # Another process opening the same old ledger added it first ("duplicate
+                # column"); anything else is raised.
+                if "sample" not in self._run_columns():
+                    raise
+
+    def _run_columns(self) -> set[str]:
+        """The columns the runs table has now."""
+        return {row["name"] for row in self._db.execute("PRAGMA table_info(runs)")}
 
     def close(self) -> None:
         self._db.close()
 
     @contextmanager
     def _tx(self) -> Iterator[sqlite3.Connection]:
+        # The outermost block is a transaction: it commits, or rolls back when an error leaves
+        # it, the COMMIT's own included. A block inside another is a savepoint: an error that
+        # leaves it undoes its writes only, so a caller that catches the error keeps the rest.
+        # When SQLite has already rolled the whole transaction back itself (a full disk, an
+        # I/O error, a trigger's RAISE(ROLLBACK)), there is nothing to undo: the error is
+        # raised as it is. The connection is then out of a transaction while a block is still
+        # open, and that is the mark: until the outermost block ends, every later write in it
+        # (all of them go through here) raises TransactionBroken instead of committing on its
+        # own, and the outermost block raises it too rather than commit.
+        if self._tx_depth:
+            if not self._db.in_transaction:
+                raise TransactionBroken("SQLite rolled this transaction back; nothing was kept")
+            savepoint = f"tx_{self._tx_depth}"
+            self._db.execute(f"SAVEPOINT {savepoint}")
+            self._tx_depth += 1
+            try:
+                yield self._db
+            except BaseException:
+                if self._db.in_transaction:
+                    self._db.execute(f"ROLLBACK TO {savepoint}")
+                    self._db.execute(f"RELEASE {savepoint}")
+                raise
+            finally:
+                self._tx_depth -= 1
+            self._db.execute(f"RELEASE {savepoint}")
+            return
         self._db.execute("BEGIN IMMEDIATE")
+        self._tx_depth = 1
         try:
             yield self._db
+            if not self._db.in_transaction:
+                raise TransactionBroken("SQLite rolled this transaction back; nothing was kept")
+            self._db.execute("COMMIT")
         except BaseException:
-            self._db.execute("ROLLBACK")
+            if self._db.in_transaction:
+                self._db.execute("ROLLBACK")
             raise
-        self._db.execute("COMMIT")
+        finally:
+            self._tx_depth = 0
+
+    def _check_open(self, db: sqlite3.Connection, run_id: str) -> None:
+        """Raise unless ``run_id`` is a run still open; called inside the write's transaction."""
+        row = db.execute("SELECT ended_at FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise NotFound(f"no run {run_id}")
+        if row["ended_at"] is not None:
+            raise RunEnded(f"run {run_id} has ended; nothing more is written into it")
+
+    @contextmanager
+    def atomic(self) -> Iterator[None]:
+        """Every ledger write inside the block commits together, or none does."""
+        with self._tx():
+            yield
 
     # Runs and spend
 
@@ -251,6 +387,7 @@ class Ledger:
         now: datetime,
         reserve_micros: int,
         day_cap_micros: int | None,
+        sample: bool = False,
     ) -> Run:
         """Record a run as started and reserve its spend cap against the day's cap.
 
@@ -265,8 +402,8 @@ class Ledger:
                 raise DayCapReached(committed, day_cap_micros)
             db.execute(
                 "INSERT INTO runs (run_id, business, job, kind, engine, day, started_at,"
-                " reserved_micros) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (run_id, business, job, kind, engine, day, iso(now), reserve_micros),
+                " reserved_micros, sample) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, business, job, kind, engine, day, iso(now), reserve_micros, int(sample)),
             )
         return self.get_run(run_id)
 
@@ -309,6 +446,7 @@ class Ledger:
             reserved_micros=row["reserved_micros"],
             cost_micros=row["cost_micros"],
             duration_ms=row["duration_ms"],
+            sample=None if row["sample"] is None else bool(row["sample"]),
         )
 
     def spent_micros(self, business: str, day: str) -> int:
@@ -320,6 +458,15 @@ class Ledger:
     def committed_micros(self, business: str, day: str) -> int:
         """Spend so far that day plus the reservations of its runs still open."""
         return self._committed(self._db, business, day)
+
+    def open_runs(self, business: str) -> list[Run]:
+        """The business's runs not yet ended, oldest first."""
+        rows = self._db.execute(
+            "SELECT run_id FROM runs WHERE business = ? AND ended_at IS NULL"
+            " ORDER BY started_at, rowid",
+            (business,),
+        ).fetchall()
+        return [self.get_run(row["run_id"]) for row in rows]
 
     def _committed(self, db: sqlite3.Connection, business: str, day: str) -> int:
         reserved = db.execute(
@@ -347,9 +494,12 @@ class Ledger:
         """Stage a change, or return the one already staged under the same key.
 
         Returns the change and whether this call created it. The payload is stored as its
-        canonical JSON, which refuses floats.
+        canonical JSON, which refuses floats. A payload nested deeper than the action receipt
+        can sign (``ACTION_FIELD_MAX_NESTING``) is refused here, before anyone can approve it.
         """
+        check_payload_depth(payload)
         with self._tx() as db:
+            self._check_open(db, run_id)
             row = db.execute(
                 "SELECT change_id FROM changes WHERE business = ? AND idempotency_key = ?",
                 (business, idempotency_key),
@@ -421,12 +571,6 @@ class Ledger:
     def mark_expired(self, change_id: str, now: datetime) -> Change:
         with self._tx() as db:
             self._move(db, change_id, ("staged", "approved"), "expired", now)
-        return self.get_change(change_id)
-
-    def mark_refused(self, change_id: str, now: datetime) -> Change:
-        """An approved change a gate refused at apply time."""
-        with self._tx() as db:
-            self._move(db, change_id, ("approved",), "refused", now)
         return self.get_change(change_id)
 
     def _move(
@@ -510,13 +654,18 @@ class Ledger:
             used_at=_maybe_time(row["used_at"]),
         )
 
-    def claim(self, change_id: str, *, approval_id: str, now: datetime) -> Change:
+    def claim(
+        self, change_id: str, *, approval_id: str, now: datetime, run_id: str | None = None
+    ) -> Change:
         """Mark an approved change applying and its yes used, together or not at all.
 
         The host claims a change before it calls the applier, so another apply pass finds it
-        claimed and leaves it alone, and the same yes can never be used twice.
+        claimed and leaves it alone, and the same yes can never be used twice. With ``run_id``
+        (the apply pass's run), a run that has ended, closed as abandoned say, claims nothing.
         """
         with self._tx() as db:
+            if run_id is not None:
+                self._check_open(db, run_id)
             self._move(db, change_id, ("approved",), "applying", now)
             used = db.execute(
                 "UPDATE approvals SET used_at = ? WHERE approval_id = ? AND change_id = ?"
@@ -527,11 +676,58 @@ class Ledger:
                 raise WrongStatus(f"approval {approval_id} is not an unused yes for {change_id}")
         return self.get_change(change_id)
 
-    def mark_applied(self, change_id: str, *, now: datetime) -> Change:
-        """Mark a claimed change applied, once the applier has carried it out."""
+    def mark_applied_with_receipt(
+        self,
+        change_id: str,
+        *,
+        receipt_id: str,
+        business: str,
+        receipt: dict[str, Any],
+        now: datetime,
+    ) -> Change:
+        """Mark a claimed change applied and store its signed action receipt, in one write.
+
+        Either both happen or neither: a change is never applied without its receipt.
+        """
         with self._tx() as db:
             self._move(db, change_id, ("applying",), "applied", now)
+            self.add_receipt(
+                receipt_id=receipt_id,
+                business=business,
+                kind="action",
+                subject_id=change_id,
+                receipt=receipt,
+                now=now,
+            )
         return self.get_change(change_id)
+
+    def refuse_change(
+        self,
+        change_id: str,
+        *,
+        run_id: str,
+        business: str,
+        gate: str,
+        reason: str,
+        now: datetime,
+        expire: bool = False,
+    ) -> RefusalRecord:
+        """Refuse (or, with ``expire``, expire) an approved change and record why, in one write.
+
+        Raises :class:`WrongStatus`, recording nothing, when the change is no longer approved
+        (another apply pass got to it first).
+        """
+        with self._tx() as db:
+            self._move(db, change_id, ("approved",), "expired" if expire else "refused", now)
+            return self.record_refusal(
+                run_id=run_id,
+                business=business,
+                tool="apply",
+                gate=gate,
+                reason=reason,
+                now=now,
+                change_id=change_id,
+            )
 
     # Refusals and flags
 
@@ -547,11 +743,13 @@ class Ledger:
         change_id: str | None = None,
     ) -> RefusalRecord:
         refusal_id = new_id("ref")
-        self._db.execute(
-            "INSERT INTO refusals (refusal_id, run_id, business, change_id, tool, gate, reason,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (refusal_id, run_id, business, change_id, tool, gate, reason, iso(now)),
-        )
+        with self._tx() as db:
+            self._check_open(db, run_id)
+            db.execute(
+                "INSERT INTO refusals (refusal_id, run_id, business, change_id, tool, gate,"
+                " reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (refusal_id, run_id, business, change_id, tool, gate, reason, iso(now)),
+            )
         return RefusalRecord(refusal_id, run_id, business, change_id, tool, gate, reason, now)
 
     def refusals(self, *, run_id: str) -> list[RefusalRecord]:
@@ -577,11 +775,13 @@ class Ledger:
     ) -> Flag:
         """Something the agent reports to the owner; it changes nothing."""
         flag_id = new_id("flg")
-        self._db.execute(
-            "INSERT INTO flags (flag_id, run_id, business, source_id, note, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (flag_id, run_id, business, source_id, note, iso(now)),
-        )
+        with self._tx() as db:
+            self._check_open(db, run_id)
+            db.execute(
+                "INSERT INTO flags (flag_id, run_id, business, source_id, note, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (flag_id, run_id, business, source_id, note, iso(now)),
+            )
         return Flag(flag_id, run_id, business, source_id, note, now, None)
 
     def flags(self, *, run_id: str) -> list[Flag]:
@@ -628,18 +828,19 @@ class Ledger:
         receipt: dict[str, Any],
         now: datetime,
     ) -> None:
-        self._db.execute(
-            "INSERT INTO receipts (receipt_id, business, kind, subject_id, receipt, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                receipt_id,
-                business,
-                kind,
-                subject_id,
-                json.dumps(receipt, ensure_ascii=False),
-                iso(now),
-            ),
-        )
+        with self._tx() as db:
+            db.execute(
+                "INSERT INTO receipts (receipt_id, business, kind, subject_id, receipt,"
+                " created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    receipt_id,
+                    business,
+                    kind,
+                    subject_id,
+                    json.dumps(receipt, ensure_ascii=False),
+                    iso(now),
+                ),
+            )
 
     def receipts(
         self,
