@@ -300,9 +300,20 @@ class Ledger:
         self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(SCHEMA)
         # A ledger from before runs kept their sample label gains the column, empty (unknown).
-        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(runs)")}
-        if "sample" not in columns:
-            self._db.execute("ALTER TABLE runs ADD COLUMN sample INTEGER CHECK (sample IN (0, 1))")
+        if "sample" not in self._run_columns():
+            try:
+                self._db.execute(
+                    "ALTER TABLE runs ADD COLUMN sample INTEGER CHECK (sample IN (0, 1))"
+                )
+            except sqlite3.OperationalError:
+                # Another process opening the same old ledger added it first ("duplicate
+                # column"); anything else is raised.
+                if "sample" not in self._run_columns():
+                    raise
+
+    def _run_columns(self) -> set[str]:
+        """The columns the runs table has now."""
+        return {row["name"] for row in self._db.execute("PRAGMA table_info(runs)")}
 
     def close(self) -> None:
         self._db.close()

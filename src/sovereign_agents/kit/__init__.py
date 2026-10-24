@@ -14,7 +14,7 @@ from sovereign_matrix.verifiable_receipts import VerifyResult, canonicalize
 
 from .approvals import ApplyReport, apply_approved, decide, pending
 from .clock import Clock, FixedClock, SystemClock, day_key, iso, parse_iso
-from .engine import Engine, EngineRun
+from .engine import Engine, EngineDidNotStart, EngineRun
 from .fence import MAX_FENCED_CHARS, Fence, sanitize_label
 from .gates import (
     APPROVAL,
@@ -94,6 +94,7 @@ __all__ = [
     "DayCapReached",
     "Decision",
     "Engine",
+    "EngineDidNotStart",
     "EngineRun",
     "Fence",
     "FixedClock",

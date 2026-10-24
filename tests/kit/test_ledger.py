@@ -752,3 +752,49 @@ def test_a_ledger_from_before_the_sample_label_gains_it_unknown(tmp_path: Path) 
     finally:
         ledger.close()
     Ledger(path).close()  # opening it again changes nothing
+
+
+def _old_ledger(path: Path) -> None:
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, business TEXT NOT NULL,"
+            " job TEXT NOT NULL, kind TEXT NOT NULL, engine TEXT NOT NULL, day TEXT NOT NULL,"
+            " started_at TEXT NOT NULL, ended_at TEXT, outcome TEXT,"
+            " reserved_micros INTEGER NOT NULL, cost_micros INTEGER, duration_ms INTEGER)"
+        )
+
+
+def test_two_processes_upgrading_an_old_ledger_at_once_both_open_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "old.sqlite3"
+    _old_ledger(path)
+    Ledger(path).close()  # the other process upgraded it first
+    real = Ledger._run_columns
+    calls: list[int] = []
+
+    def stale_once(self: Ledger) -> set[str]:
+        # This process read the columns before the other one added "sample".
+        calls.append(1)
+        columns = real(self)
+        return columns - {"sample"} if len(calls) == 1 else columns
+
+    monkeypatch.setattr(Ledger, "_run_columns", stale_once)
+    ledger = Ledger(path)
+    try:
+        start(ledger)
+        assert ledger.get_run("run-1").sample is False
+    finally:
+        ledger.close()
+
+
+def test_a_failed_upgrade_that_is_not_the_race_is_raised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "old.sqlite3"
+    _old_ledger(path)
+    Ledger(path).close()
+    # The column is there, but the check keeps saying it is not: not a race, so it is raised.
+    monkeypatch.setattr(Ledger, "_run_columns", lambda self: {"run_id"})
+    with pytest.raises(sqlite3.OperationalError, match="duplicate column"):
+        Ledger(path)

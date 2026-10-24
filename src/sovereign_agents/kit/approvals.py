@@ -195,12 +195,12 @@ def apply_approved(
     outcome = "success"
     try:
         for change in ledger.changes(business, status="approved"):
-            if clock.now() - started >= time_limit:
-                deferred.append(change.change_id)
-                continue
             applier = appliers.get(change.job)
             if applier is None:
                 skipped.append(change.change_id)
+                continue
+            if clock.now() - started >= time_limit:
+                deferred.append(change.change_id)
                 continue
             now = clock.now()
             approval = ledger.approval_for(change.change_id)

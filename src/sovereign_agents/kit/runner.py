@@ -17,18 +17,20 @@ business closes it as abandoned once it has been open for ``ABANDON_AFTER``.
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 from .clock import Clock, iso
-from .engine import Engine, EngineRun
+from .engine import Engine, EngineDidNotStart, EngineRun
 from .guard import ToolCall, ToolGuard
 from .job import Job, RunContext
 from .ledger import Ledger, WrongStatus, new_id
 from .receipts import Signer, issue_receipt
+
+logger = logging.getLogger("sovereign_agents.kit.runner")
 
 # How long a run may take. The runner stops the engine at this limit and ends the run as
 # "timeout"; the apply pass claims no new change past it.
@@ -222,19 +224,29 @@ class Runner:
         done, _ = await asyncio.wait({task}, timeout=self._time_limit.total_seconds())
         if task in done:
             return task.result()
+        # The limit has fired: whatever the engine does while it stops (ends, returns, or
+        # raises from its own cleanup, as the SDK's anyio generator can), the run is a timeout.
         task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning(
+                "the engine raised while it was stopped at the time limit", exc_info=True
+            )
         limit_ms = int(self._time_limit.total_seconds() * 1000)
         return EngineRun("timeout", self._budget.reserve_micros, limit_ms)
 
     async def run(self, ctx: RunContext, job: Job) -> RunResult:
         """Run ``job`` in the open run ``ctx``, then close it and sign its receipt.
 
-        When the engine raises, the run is still closed (outcome ``error: <type>``) and
-        receipted, and the error is raised again. When the engine is still running at the time
-        limit, it is stopped and the run is closed as ``timeout``, charged its reservation (the
-        engine never reported its cost), and receipted with the tool calls made so far.
+        When the engine raises, the run is still closed (outcome ``error: <type>``), charged
+        its reservation (it may have spent money and did not say how much) unless the error is
+        :class:`EngineDidNotStart`, and receipted, and the error is raised again. When the
+        engine is still running at the time limit, it is stopped and the run is closed as
+        ``timeout``, charged its reservation (the engine never reported its cost), and
+        receipted with the tool calls made so far.
         """
         guard = ToolGuard(self._engine.tool_names(job.tools), on_deny=ctx.record_refusal)
         failure: Exception | None = None
@@ -242,7 +254,10 @@ class Runner:
             report = await self._run_engine(job, guard)
         except Exception as exc:
             failure = exc
-            report = EngineRun(f"error: {type(exc).__name__}", 0, 0)
+            # Unless it failed before any model call, it may have spent money before it
+            # failed, and did not say how much.
+            spent = 0 if isinstance(exc, EngineDidNotStart) else self._budget.reserve_micros
+            report = EngineRun(f"error: {type(exc).__name__}", spent, 0)
         now = self._clock.now()
         try:
             with self._ledger.atomic():  # a run is ended only together with its receipt

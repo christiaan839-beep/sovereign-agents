@@ -585,3 +585,33 @@ def test_the_apply_pass_closes_runs_abandoned_before_it(rig: Rig) -> None:
     assert (lost.outcome, lost.cost_micros) == ("abandoned", 750_000)
     [receipt] = rig.ledger.receipts("example-shop", kind="run", subject_id="run-lost")
     assert_receipt_valid(receipt, rig.signer.public_pem)
+
+
+def test_the_apply_pass_stops_claiming_at_exactly_its_time_limit(rig: Rig) -> None:
+    first = _stage_deep(rig, {"deep": []}, key="1" * 64)
+    second = _stage_deep(rig, {"deep": []}, key="2" * 64)
+    applier = ClockPushingApplier(clock=rig.clock, step=timedelta(minutes=30))
+    report = apply_approved(
+        ledger=rig.ledger,
+        signer=rig.signer,
+        clock=rig.clock,
+        appliers={"deep": applier},
+        time_limit=timedelta(minutes=30),
+    )
+    assert ([c for c, _ in report.applied], report.deferred) == ([first], (second,))
+
+
+def test_a_change_with_no_applier_is_skipped_even_past_the_time_limit(rig: Rig) -> None:
+    first = _stage_deep(rig, {"deep": []}, key="1" * 64)
+    orphan = rig.stage()  # an example_mail change; this pass has no applier for that job
+    applier = ClockPushingApplier(clock=rig.clock, step=timedelta(minutes=31))
+    rig.yes(orphan)
+    report = apply_approved(
+        ledger=rig.ledger,
+        signer=rig.signer,
+        clock=rig.clock,
+        appliers={"deep": applier},
+        time_limit=timedelta(minutes=30),
+    )
+    assert [c for c, _ in report.applied] == [first]
+    assert (report.skipped, report.deferred) == ((orphan,), ())

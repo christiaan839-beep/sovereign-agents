@@ -38,6 +38,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import HookCallback, McpSdkServerConfig
 
 from sovereign_agents.kit import (
+    EngineDidNotStart,
     EngineRun,
     Job,
     ToolGuard,
@@ -90,8 +91,8 @@ def cli_env(config_dir: Path) -> dict[str, str]:
     return {"CLAUDE_CODE_OAUTH_TOKEN": "", "CLAUDE_CONFIG_DIR": str(config_dir)}
 
 
-class ApiKeyMissing(ValueError):
-    """The engine runs only on the client's own API key."""
+class ApiKeyMissing(EngineDidNotStart, ValueError):
+    """The engine runs only on the client's own API key; without one it makes no call."""
 
 
 def guard_hook(guard: ToolGuard, tools: ToolSet) -> HookCallback:

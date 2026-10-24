@@ -66,12 +66,22 @@ It is the code behind the studio's line "One agent, one job, one week".
      and ends the run as `timeout`, charged its reservation (the engine never reported its cost), with a receipt of
      the tool calls made so far. An apply pass claims no new change past the limit: the rest stay approved, are
      reported as not reached, and the run ends as `timeout`. An applier call already under way is not interrupted.
+     The limit is only as good as the engine's response to cancellation: the runner cancels the engine and waits for
+     it to stop, so an engine that ignores cancellation holds the run open. Whatever the engine does while it stops
+     (returns, or raises from its own cleanup, as the SDK's anyio generator can), the run is a `timeout`, and a
+     cleanup error is logged.
+   - A run whose engine raises is ended as `error: <type>` and charged its whole reservation: it may have spent money
+     before it failed, and did not report how much. The exception is an engine that failed before any model call (a
+     missing API key): it raises `EngineDidNotStart`, and its run is charged nothing.
    - A run whose receipt could not be written stays open, and its reservation keeps counting against that day's cap.
      The next run or apply pass of the business closes any run open for more than two hours (`ABANDON_AFTER`, four
      times the time limit) as `abandoned`: it charges the whole reservation as spend, since the real cost is unknown,
      and signs a run receipt with the run's stored `sample` label and with `toolCalls`, `applied` and `unfinished`
      null, because only the lost process knew them. The charge holds the day's cap just as the reservation did; the
      gain is a closed run, recorded spend and a receipt.
+   - An applier call that hangs for longer than `ABANDON_AFTER` can outlive its run: the run is closed as abandoned
+     with `"applied": null`, and the change's action receipt, stored when the call returns, names that run as its
+     `applyRunId`. The run receipt's null means unknown, not missing, and the action receipt verifies on its own.
    - Once a run has ended, nothing more is written into it: staging a change, recording a refusal or a flag, and an
      apply pass's claim all fail with `RunEnded`, checked in the same write. A late process fails loudly instead of
      writing what no receipt covers.
