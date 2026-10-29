@@ -1,5 +1,7 @@
 # sovereign-agents
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/christiaan839-beep/sovereign-agents/badge)](https://scorecard.dev/viewer/?uri=github.com/christiaan839-beep/sovereign-agents)
+
 Sovereign Matrix's agent kit: one Claude agent for one small-business job. The agent proposes, the owner says yes,
 then the kit acts, and every action leaves a signed receipt.
 
@@ -143,4 +145,5 @@ recorded demos for the studio page, and moving the trust core to its own public 
 ## Licence
 
 Licensed under the Apache License, Version 2.0 (see [LICENSE](LICENSE)). NOTICE lists the code that comes from
-commerce-agents, under its own Apache-2.0 licence in `third_party/commerce-agents/`.
+commerce-agents, under its own Apache-2.0 licence in `third_party/commerce-agents/`. Report security flaws as
+[SECURITY.md](SECURITY.md) says; [CONTRIBUTING.md](CONTRIBUTING.md) has the rules for changes.
