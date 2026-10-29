@@ -139,8 +139,8 @@ SOVEREIGN_AGENTS_LIVE=1 uv run pytest -q tests/test_live_smoke.py
 ## Not in version 1
 
 The other three jobs, the real connectors (Gmail, Google Calendar, the Shopify Admin API, Google Business Profile), the
-WhatsApp approval page and a signed approval, autonomy levels ("Automatic", "Never"), hosting for a client, the
-recorded demos for the studio page, and moving the trust core to its own public repo.
+WhatsApp approval page and a signed approval, autonomy levels ("Automatic", "Never"), hosting for a client, and the
+recorded demos for the studio page. The trust core stays in this repository, in `src/sovereign_agents/kit/`.
 
 ## Licence
 
