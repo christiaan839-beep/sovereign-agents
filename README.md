@@ -139,3 +139,8 @@ SOVEREIGN_AGENTS_LIVE=1 uv run pytest -q tests/test_live_smoke.py
 The other three jobs, the real connectors (Gmail, Google Calendar, the Shopify Admin API, Google Business Profile), the
 WhatsApp approval page and a signed approval, autonomy levels ("Automatic", "Never"), hosting for a client, the
 recorded demos for the studio page, and moving the trust core to its own public repo.
+
+## Licence
+
+Licensed under the Apache License, Version 2.0 (see [LICENSE](LICENSE)). NOTICE lists the code that comes from
+commerce-agents, under its own Apache-2.0 licence in `third_party/commerce-agents/`.

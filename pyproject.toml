@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Sovereign Matrix's agent kit: one Claude agent for one small-business job, every action approved and signed."
 readme = "README.md"
 requires-python = ">=3.11"
-license-files = ["NOTICE", "third_party/commerce-agents/LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "third_party/commerce-agents/LICENSE"]
 dependencies = [
     "claude-agent-sdk==0.2.168",
     "cryptography==50.0.2",
