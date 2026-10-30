@@ -13,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from sovereign_matrix.verifiable_receipts import ed25519_public_key_problem
 
 from sovereign_agents.kit.ledger import Ledger
 from sovereign_agents.kit.receipts import (
@@ -413,6 +414,82 @@ def test_a_small_order_issuer_key_is_refused_where_it_is_loaded(tmp_path: Path) 
         )
     )
     with pytest.raises(KeyFileError, match="is refused: public key is a small-order point"):
+        load_public_pem(tmp_path)
+
+
+def _raw_key_pem(raw: bytes) -> bytes:
+    # cryptography takes any 32 bytes as an Ed25519 public key; the verifiers check them.
+    return Ed25519PublicKey.from_public_bytes(raw).public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
+
+_P = 2**255 - 19
+# One key for each reason the strict profile gives. y = 2 has no x on the curve. y = p + 3 is
+# 3 encoded with y of p or more; 3 itself is on the curve, so only the encoding is wrong.
+REFUSED_RAW_KEYS = {
+    "off-curve": (
+        (2).to_bytes(32, "little"),
+        "public key is not a point on the curve",
+    ),
+    "non-canonical": (
+        (_P + 3).to_bytes(32, "little"),
+        "public key is not a canonical encoding",
+    ),
+    "small-order": (bytes([1]) + bytes(31), "public key is a small-order point"),
+    "mixed-order": ((3).to_bytes(32, "little"), NOT_IN_SUBGROUP),
+}
+
+
+@pytest.mark.parametrize(("raw", "reason"), REFUSED_RAW_KEYS.values(), ids=REFUSED_RAW_KEYS.keys())
+def test_a_key_the_strict_profile_refuses_is_refused_where_it_is_loaded(
+    tmp_path: Path, raw: bytes, reason: str
+) -> None:
+    public_pem = _raw_key_pem(raw)
+    assert ed25519_public_key_problem(raw) == reason
+    assert public_key_problem(public_pem) == reason
+    (tmp_path / PUBLIC_KEY_FILE).write_bytes(public_pem)
+    with pytest.raises(KeyFileError, match=f"is refused: {reason};"):
+        load_public_pem(tmp_path)
+    # A receipt under it is rejected with the same reason by both verifiers.
+    body = {"id": "rcp-forged", "business": "example-shop", "totalCents": 77_000}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    receipt = {
+        **body,
+        "canonical": canonical,
+        "contentHash": f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}",
+        "signature": "v2=" + base64.b64encode(bytes(64)).decode("ascii"),
+    }
+    assert_receipt_rejected(receipt, public_pem, reason)
+
+
+def test_any_reason_the_upstream_check_gives_refuses_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fail closed: a reason upstream adds later, whatever its wording, still refuses the key.
+    public = new_keys(tmp_path).read_bytes()
+    monkeypatch.setattr(
+        "sovereign_agents.kit.receipts.ed25519_public_key_problem",
+        lambda raw: "a reason added later",
+    )
+    assert public_key_problem(public) == "a reason added later"
+    with pytest.raises(KeyFileError, match="is refused: a reason added later;"):
+        load_public_pem(tmp_path)
+
+
+# A secp112r1 public key (its base point): a curve cryptography does not support, so loading
+# it raises UnsupportedAlgorithm rather than ValueError.
+SECP112R1_PEM = (
+    b"-----BEGIN PUBLIC KEY-----\n"
+    b"MDIwEAYHKoZIzj0CAQYFK4EEAAYDHgAECUhyOZlaXudrVfnC8JionOWvhyTAoj4OD/d1AA==\n"
+    b"-----END PUBLIC KEY-----\n"
+)
+
+
+def test_a_public_key_on_an_unsupported_curve_is_refused(tmp_path: Path) -> None:
+    assert public_key_problem(SECP112R1_PEM) == "not an Ed25519 public key"
+    (tmp_path / PUBLIC_KEY_FILE).write_bytes(SECP112R1_PEM)
+    with pytest.raises(KeyFileError, match="is refused: not an Ed25519 public key"):
         load_public_pem(tmp_path)
 
 

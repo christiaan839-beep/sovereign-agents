@@ -8,6 +8,12 @@
   L or more. Receipts the kit signs pass it in Python, Go and JavaScript.
 - `load_public_pem` and `load_signer` refuse a public key those verifiers refuse, with their reason, and
   `public_key_problem` gives that reason for any PEM public key. A key `new_keys` makes is never refused.
+- verifiable-receipts moves to commit 4d9943a, in the package and in the Go verifier. `public_key_problem` now asks
+  its `ed25519_public_key_problem` about the key's raw 32 bytes and refuses the key for any reason it gives. Before, it
+  ran `verify_ed25519` with a signature that never verifies and accepted the key unless the reason began "public
+  key", so a reason worded otherwise would have let a bad key through.
+- `load_public_pem` refuses a PEM public key on a curve cryptography does not support, such as secp112r1, with a
+  `KeyFileError` ("not an Ed25519 public key"). Before, cryptography's `UnsupportedAlgorithm` escaped.
 
 ## 0.1.0
 
