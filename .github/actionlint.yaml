@@ -1,0 +1,8 @@
+# actionlint v1.7.12 does not know GitHub's $/ self-repository reference
+# (jobs.<job_id>.uses: $/.github/workflows/<file>), which GitHub documents
+# as the recommended way to call a reusable workflow in the same
+# repository. Ignore that one message, in the one file that uses it.
+paths:
+  .github/workflows/release.yml:
+    ignore:
+      - 'reusable workflow call "\$/\.github/workflows/ci\.yml" at "uses" is not following the format'
