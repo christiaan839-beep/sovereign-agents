@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `sovereign-agents receipts export --business B --out DIR` writes every receipt of a business (`receipts.json`)
+  and its public key, never the private key, for anyone to check. It refuses to overwrite or to write nothing.
+- `samples/sample-bakery-receipts/`: the receipts of one demo run on the sample bakery, signed by a key whose private
+  half was deleted. `.github/workflows/sample-receipts.yml` checks them with verify-receipts-action on every push.
+
 ## 0.1.0
 
 The first release: the kit and its first job, supplier inbox + reorders, on the sample bakery.

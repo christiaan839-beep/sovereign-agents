@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -257,6 +258,33 @@ def _receipts_verify(args: argparse.Namespace, ctx: Context) -> int:
     return 1 if failed else 0
 
 
+def _receipts_export(args: argparse.Namespace, ctx: Context) -> int:
+    """Write every receipt and the public key, never the private key, for anyone to check."""
+    business = check_slug(args.business)
+    out_dir = Path(args.out)
+    receipts_path = out_dir / "receipts.json"
+    key_path = out_dir / PUBLIC_KEY_FILE
+    for path in (receipts_path, key_path):
+        if path.exists():
+            raise CliError(f"{path} already exists; export into an empty folder")
+    public = load_public_pem(ctx.config.home.keys_dir(business))
+    ledger = _ledger(ctx)
+    try:
+        receipts = ledger.receipts(business)
+    finally:
+        ledger.close()
+    if not receipts:
+        raise CliError(f"the ledger holds no receipts for {business}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    receipts_path.write_text(json.dumps(receipts, ensure_ascii=False, indent=2) + "\n", "utf-8")
+    key_path.write_bytes(public)
+    print(
+        f"Wrote {len(receipts)} receipt(s) to {receipts_path} and the public key to {key_path}.",
+        file=ctx.out,
+    )
+    return 0
+
+
 def _demo(args: argparse.Namespace, ctx: Context) -> int:
     """The whole loop on a sample business with the fake model: keys (made once), a run, the
     owner's yes or no in this terminal, the apply pass, and a check of every receipt."""
@@ -328,6 +356,12 @@ def build_parser() -> argparse.ArgumentParser:
     receipts_verify = receipts_commands.add_parser("verify", help="check every receipt")
     receipts_verify.add_argument("--business", required=True, help="the business slug")
     receipts_verify.set_defaults(handler=_receipts_verify)
+    receipts_export = receipts_commands.add_parser(
+        "export", help="write every receipt and the public key, for anyone to check"
+    )
+    receipts_export.add_argument("--business", required=True, help="the business slug")
+    receipts_export.add_argument("--out", required=True, help="the folder to write into")
+    receipts_export.set_defaults(handler=_receipts_export)
     return parser
 
 

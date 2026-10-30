@@ -1,5 +1,7 @@
 # keys and secrets never enter the repo
 *.pem
+# except the published sample's public key; tests/test_sample_receipts.py checks it is a public key
+!samples/sample-bakery-receipts/ed25519.pem
 *.key
 .env
 .env.*
