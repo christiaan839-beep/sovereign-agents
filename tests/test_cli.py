@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from sovereign_agents.kit import (
     Ledger,
     issue_receipt,
     load_signer,
+    verify,
 )
 from sovereign_agents.kit.testing import ScriptedCall, ScriptedEngine, assert_receipt_valid
 from tests.helpers import GOOD_REORDER, SAMPLE, SAMPLES
@@ -180,6 +182,47 @@ def test_receipts_verify_reports_each_receipt(tmp_path: Path) -> None:
     assert f"{good['id']}: ok" in out
     assert "rcp-edited: FAILED" in out
     assert "2 receipt(s), 1 failed." in out
+
+
+def test_receipts_export_writes_the_receipts_and_only_the_public_key(tmp_path: Path) -> None:
+    run_cli(["keys", "new", "--business", SAMPLE], tmp_path)
+    signer = load_signer(SAMPLE, tmp_path / "keys" / SAMPLE)
+    ledger = Ledger(tmp_path / "ledger.sqlite3")
+    issued = [
+        issue_receipt(
+            ledger=ledger, signer=signer, kind="run", subject_id=f"run-{n}", body={}, now=T0
+        )
+        for n in (1, 2)
+    ]
+    ledger.close()
+    out_dir = tmp_path / "public"
+    code, out, _ = run_cli(
+        ["receipts", "export", "--business", SAMPLE, "--out", str(out_dir)], tmp_path
+    )
+    assert code == 0
+    assert "Wrote 2 receipt(s)" in out
+    assert sorted(p.name for p in out_dir.iterdir()) == ["ed25519.pem", "receipts.json"]
+    assert json.loads((out_dir / "receipts.json").read_text("utf-8")) == issued
+    public = (out_dir / "ed25519.pem").read_bytes()
+    assert public == (tmp_path / "keys" / SAMPLE / "ed25519.pem").read_bytes()
+    assert b"PRIVATE" not in public
+    for receipt in issued:
+        assert verify(receipt, public).ok
+
+
+def test_receipts_export_refuses_to_overwrite_or_to_write_nothing(tmp_path: Path) -> None:
+    run_cli(["keys", "new", "--business", SAMPLE], tmp_path)
+    out_dir = tmp_path / "public"
+    args = ["receipts", "export", "--business", SAMPLE, "--out", str(out_dir)]
+    code, _, err = run_cli(args, tmp_path)
+    assert code == 2
+    assert f"the ledger holds no receipts for {SAMPLE}" in err
+    assert not out_dir.exists()
+    out_dir.mkdir()
+    (out_dir / "receipts.json").write_text("[]", "utf-8")
+    code, _, err = run_cli(args, tmp_path)
+    assert code == 2
+    assert "already exists; export into an empty folder" in err
 
 
 def test_the_apply_summary_names_a_result_that_was_not_recorded() -> None:

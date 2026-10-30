@@ -72,6 +72,10 @@ the hostile email and a `Bash` call (both refused and listed in the run receipt)
 owner. Its calls go through the same hook, tool server, gates and ledger as a real run. Its run receipt names the
 engine `fake-model`.
 
+`uv run sovereign-agents receipts export --business sample-bakery --out DIR` writes the receipts and the public key
+for anyone to check. [`samples/sample-bakery-receipts/`](samples/sample-bakery-receipts/) holds one such export, and
+CI checks it with verify-receipts-action on every push.
+
 ## Run each step with Claude
 
 Claude runs on the client's own Anthropic account, with an API key; the kit never uses a claude.ai login (design, "Who

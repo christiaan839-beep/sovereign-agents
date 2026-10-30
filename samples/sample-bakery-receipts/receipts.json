@@ -1,0 +1,194 @@
+[
+  {
+    "runId": "run-7f4d4936e115f28b",
+    "job": "supplier_reorders",
+    "runKind": "agent",
+    "engine": "fake-model",
+    "sample": true,
+    "startedAt": "2026-10-30T10:01:39Z",
+    "endedAt": "2026-10-30T10:01:39Z",
+    "outcome": "success",
+    "costMicros": 0,
+    "durationMs": 0,
+    "toolCalls": [
+      {
+        "tool": "mcp__supplier_reorders__read_supplier_inbox",
+        "allowed": true
+      },
+      {
+        "tool": "mcp__supplier_reorders__get_stock_levels",
+        "allowed": true
+      },
+      {
+        "tool": "mcp__supplier_reorders__list_suppliers",
+        "allowed": true
+      },
+      {
+        "tool": "mcp__supplier_reorders__stage_reorder",
+        "allowed": true
+      },
+      {
+        "tool": "mcp__supplier_reorders__stage_reorder",
+        "allowed": true
+      },
+      {
+        "tool": "mcp__supplier_reorders__stage_reorder",
+        "allowed": true
+      },
+      {
+        "tool": "Bash",
+        "allowed": false
+      },
+      {
+        "tool": "mcp__supplier_reorders__flag_message",
+        "allowed": true
+      }
+    ],
+    "staged": [
+      "chg-a246bec297702e6d",
+      "chg-542a6a29c8724318"
+    ],
+    "applied": [],
+    "unfinished": [],
+    "flags": [
+      "flg-7d2c873bf7810a7a"
+    ],
+    "refusals": [
+      {
+        "id": "ref-a0ab29d0e8a74377",
+        "tool": "stage_reorder",
+        "gate": "provenance",
+        "changeId": null
+      },
+      {
+        "id": "ref-a51a9b828c089d3e",
+        "tool": "Bash",
+        "gate": "tools",
+        "changeId": null
+      }
+    ],
+    "v": 1,
+    "type": "sovereign-agents/run",
+    "id": "rcp-591fe99255a5bb49",
+    "business": "sample-bakery",
+    "createdAt": "2026-10-30T10:01:39Z",
+    "canonical": "{\"applied\":[],\"business\":\"sample-bakery\",\"costMicros\":0,\"createdAt\":\"2026-10-30T10:01:39Z\",\"durationMs\":0,\"endedAt\":\"2026-10-30T10:01:39Z\",\"engine\":\"fake-model\",\"flags\":[\"flg-7d2c873bf7810a7a\"],\"id\":\"rcp-591fe99255a5bb49\",\"job\":\"supplier_reorders\",\"outcome\":\"success\",\"refusals\":[{\"changeId\":null,\"gate\":\"provenance\",\"id\":\"ref-a0ab29d0e8a74377\",\"tool\":\"stage_reorder\"},{\"changeId\":null,\"gate\":\"tools\",\"id\":\"ref-a51a9b828c089d3e\",\"tool\":\"Bash\"}],\"runId\":\"run-7f4d4936e115f28b\",\"runKind\":\"agent\",\"sample\":true,\"staged\":[\"chg-a246bec297702e6d\",\"chg-542a6a29c8724318\"],\"startedAt\":\"2026-10-30T10:01:39Z\",\"toolCalls\":[{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__read_supplier_inbox\"},{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__get_stock_levels\"},{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__list_suppliers\"},{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__stage_reorder\"},{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__stage_reorder\"},{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__stage_reorder\"},{\"allowed\":false,\"tool\":\"Bash\"},{\"allowed\":true,\"tool\":\"mcp__supplier_reorders__flag_message\"}],\"type\":\"sovereign-agents/run\",\"unfinished\":[],\"v\":1}",
+    "contentHash": "sha256:2fb9d54e09eb8872ae484831bd819b4fe55ba131c511c6beba72bdc4affc817e",
+    "signature": "v2=8zXMMJZgiWkbsKF2wgvWu6Wemw52bwhcHYtnfd7uskooNEjPLPp5l2+ei1hK6nbGdl5g6JIgvp65N08y6JfPDA=="
+  },
+  {
+    "runId": "run-7f4d4936e115f28b",
+    "applyRunId": "run-9bfb608794894d69",
+    "job": "supplier_reorders",
+    "changeId": "chg-a246bec297702e6d",
+    "kind": "reorder",
+    "idempotencyKey": "5ab7e8f652016ecc7ed8b6922e05dd2ef4412c58b1feb0a2c4fef502b1f93553",
+    "sample": true,
+    "action": {
+      "lines": [
+        {
+          "quantity": 6,
+          "sku": "FLR-WHITE-25",
+          "unitPriceCents": 38500
+        }
+      ],
+      "reply": "Good morning. Please send 6 bags of white bread flour (25 kg) at R385.00 a bag on Monday. Thank you, Sample Bakery.",
+      "sourceMessageId": "msg-001",
+      "supplierId": "sup-flour",
+      "totalCents": 231000
+    },
+    "result": {
+      "orderRef": "po-5ab7e8f65201",
+      "replyRef": "mail-5ab7e8f65201",
+      "to": "orders@flour-mill.example"
+    },
+    "approval": {
+      "id": "apr-d1e4b75f9a20fdbf",
+      "decision": "yes",
+      "by": "owner",
+      "channel": "terminal",
+      "at": "2026-10-30T10:01:39Z"
+    },
+    "stagedAt": "2026-10-30T10:01:39Z",
+    "v": 1,
+    "type": "sovereign-agents/action",
+    "id": "rcp-f2eaebd33c2aab6c",
+    "business": "sample-bakery",
+    "createdAt": "2026-10-30T10:01:39Z",
+    "canonical": "{\"action\":{\"lines\":[{\"quantity\":6,\"sku\":\"FLR-WHITE-25\",\"unitPriceCents\":38500}],\"reply\":\"Good morning. Please send 6 bags of white bread flour (25 kg) at R385.00 a bag on Monday. Thank you, Sample Bakery.\",\"sourceMessageId\":\"msg-001\",\"supplierId\":\"sup-flour\",\"totalCents\":231000},\"applyRunId\":\"run-9bfb608794894d69\",\"approval\":{\"at\":\"2026-10-30T10:01:39Z\",\"by\":\"owner\",\"channel\":\"terminal\",\"decision\":\"yes\",\"id\":\"apr-d1e4b75f9a20fdbf\"},\"business\":\"sample-bakery\",\"changeId\":\"chg-a246bec297702e6d\",\"createdAt\":\"2026-10-30T10:01:39Z\",\"id\":\"rcp-f2eaebd33c2aab6c\",\"idempotencyKey\":\"5ab7e8f652016ecc7ed8b6922e05dd2ef4412c58b1feb0a2c4fef502b1f93553\",\"job\":\"supplier_reorders\",\"kind\":\"reorder\",\"result\":{\"orderRef\":\"po-5ab7e8f65201\",\"replyRef\":\"mail-5ab7e8f65201\",\"to\":\"orders@flour-mill.example\"},\"runId\":\"run-7f4d4936e115f28b\",\"sample\":true,\"stagedAt\":\"2026-10-30T10:01:39Z\",\"type\":\"sovereign-agents/action\",\"v\":1}",
+    "contentHash": "sha256:4d83416f6f52f0f0dc63da769038e7c35c8b7f327a6f520bd6a62375039d27ab",
+    "signature": "v2=Y/lovcERoc8Tf1XoW+OjFgy2YPi2IGDmUl3OzgSkqcmyild63lnMTUIUjTCts80osJCjjmNJM/MBBm42d3QlDA=="
+  },
+  {
+    "runId": "run-7f4d4936e115f28b",
+    "applyRunId": "run-9bfb608794894d69",
+    "job": "supplier_reorders",
+    "changeId": "chg-542a6a29c8724318",
+    "kind": "reorder",
+    "idempotencyKey": "32de8a421e325c6b7966998747c92b2f78a6760d88331cb54610b2c2e8be9225",
+    "sample": true,
+    "action": {
+      "lines": [
+        {
+          "quantity": 3,
+          "sku": "BTR-UNSALTED-5",
+          "unitPriceCents": 64000
+        }
+      ],
+      "reply": "Hello. Please send 3 blocks of unsalted butter (5 kg) at R640.00 a block. Thank you, Sample Bakery.",
+      "sourceMessageId": "msg-002",
+      "supplierId": "sup-dairy",
+      "totalCents": 192000
+    },
+    "result": {
+      "orderRef": "po-32de8a421e32",
+      "replyRef": "mail-32de8a421e32",
+      "to": "orders@dairy.example"
+    },
+    "approval": {
+      "id": "apr-ced948d136be0111",
+      "decision": "yes",
+      "by": "owner",
+      "channel": "terminal",
+      "at": "2026-10-30T10:01:39Z"
+    },
+    "stagedAt": "2026-10-30T10:01:39Z",
+    "v": 1,
+    "type": "sovereign-agents/action",
+    "id": "rcp-0e1edd919abe2f55",
+    "business": "sample-bakery",
+    "createdAt": "2026-10-30T10:01:39Z",
+    "canonical": "{\"action\":{\"lines\":[{\"quantity\":3,\"sku\":\"BTR-UNSALTED-5\",\"unitPriceCents\":64000}],\"reply\":\"Hello. Please send 3 blocks of unsalted butter (5 kg) at R640.00 a block. Thank you, Sample Bakery.\",\"sourceMessageId\":\"msg-002\",\"supplierId\":\"sup-dairy\",\"totalCents\":192000},\"applyRunId\":\"run-9bfb608794894d69\",\"approval\":{\"at\":\"2026-10-30T10:01:39Z\",\"by\":\"owner\",\"channel\":\"terminal\",\"decision\":\"yes\",\"id\":\"apr-ced948d136be0111\"},\"business\":\"sample-bakery\",\"changeId\":\"chg-542a6a29c8724318\",\"createdAt\":\"2026-10-30T10:01:39Z\",\"id\":\"rcp-0e1edd919abe2f55\",\"idempotencyKey\":\"32de8a421e325c6b7966998747c92b2f78a6760d88331cb54610b2c2e8be9225\",\"job\":\"supplier_reorders\",\"kind\":\"reorder\",\"result\":{\"orderRef\":\"po-32de8a421e32\",\"replyRef\":\"mail-32de8a421e32\",\"to\":\"orders@dairy.example\"},\"runId\":\"run-7f4d4936e115f28b\",\"sample\":true,\"stagedAt\":\"2026-10-30T10:01:39Z\",\"type\":\"sovereign-agents/action\",\"v\":1}",
+    "contentHash": "sha256:f015ac6abfed78c81bb36e78db687ebf948e131c85083516de129a23c0f97dc5",
+    "signature": "v2=2Bd2j2aCgMSE2qLXIk5F33rq1tBFcyDEl+7Blk2owPboAX5Qh7kJGzso3e5hHG+zDYE17IXK94rZH9I7IbDLAg=="
+  },
+  {
+    "runId": "run-9bfb608794894d69",
+    "job": "apply",
+    "runKind": "apply",
+    "engine": "host",
+    "sample": true,
+    "startedAt": "2026-10-30T10:01:39Z",
+    "endedAt": "2026-10-30T10:01:39Z",
+    "outcome": "success",
+    "costMicros": 0,
+    "durationMs": 0,
+    "toolCalls": [],
+    "staged": [],
+    "applied": [
+      "chg-a246bec297702e6d",
+      "chg-542a6a29c8724318"
+    ],
+    "unfinished": [],
+    "flags": [],
+    "refusals": [],
+    "v": 1,
+    "type": "sovereign-agents/run",
+    "id": "rcp-96591efd1be2dbe2",
+    "business": "sample-bakery",
+    "createdAt": "2026-10-30T10:01:39Z",
+    "canonical": "{\"applied\":[\"chg-a246bec297702e6d\",\"chg-542a6a29c8724318\"],\"business\":\"sample-bakery\",\"costMicros\":0,\"createdAt\":\"2026-10-30T10:01:39Z\",\"durationMs\":0,\"endedAt\":\"2026-10-30T10:01:39Z\",\"engine\":\"host\",\"flags\":[],\"id\":\"rcp-96591efd1be2dbe2\",\"job\":\"apply\",\"outcome\":\"success\",\"refusals\":[],\"runId\":\"run-9bfb608794894d69\",\"runKind\":\"apply\",\"sample\":true,\"staged\":[],\"startedAt\":\"2026-10-30T10:01:39Z\",\"toolCalls\":[],\"type\":\"sovereign-agents/run\",\"unfinished\":[],\"v\":1}",
+    "contentHash": "sha256:dfdc246997b74bcd834d171b1617d7bbd155d22c2f44f79840c4089d0df556ed",
+    "signature": "v2=umu0zSRF+B7LbO6LrFt1HG3hxIMzgIL3J+1cns+uT4mPCy0xr+3AzzyYKkWhis+zE8RiDv2HmRsHmekwasRnBQ=="
+  }
+]

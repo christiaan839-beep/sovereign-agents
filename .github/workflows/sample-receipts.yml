@@ -1,0 +1,27 @@
+# Checks the published sample receipts with verify-receipts-action, the way
+# anyone else would: pinned public key, no network. A forged or edited
+# receipt fails the build.
+name: sample-receipts
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  verify:
+    name: Verify the sample receipts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: christiaan839-beep/verify-receipts-action@e0061c5da823f0889d1720ab68fa4f1e7c721cee # v0.1.0
+        with:
+          receipts: samples/sample-bakery-receipts/receipts.json
+          public-keys-file: samples/sample-bakery-receipts/ed25519.pem
+          fail-on-empty: "true"
