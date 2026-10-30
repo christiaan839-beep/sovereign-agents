@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 0.1.0
 
 The first release: the kit and its first job, supplier inbox + reorders, on the sample bakery.
