@@ -10,3 +10,10 @@
 # and at its line in the tree. The plan is a record and is not edited, so the line holds.
 5371462fef92479425316754664cd5f63e83dc92:docs/plans/2026-10-16-kit-1-core-and-supplier-reorders.md:generic-api-key:2490
 docs/plans/2026-10-16-kit-1-core-and-supplier-reorders.md:generic-api-key:2581
+
+# The idempotencyKey values in the sample's exported receipts, in the commit that added them on
+# the ccr-52b39d6a-pcv6wi branch (pull request 19): SHA-256 hashes of each reorder's public
+# identity (jobs/supplier_reorders/caps.py, idempotency_key), recomputed from the receipts' own
+# fields, and inside each receipt's signed canonical.
+762164249610f20fde65e8cc1beff0dcc4be565b:samples/sample-bakery-receipts/receipts.json:generic-api-key:85
+762164249610f20fde65e8cc1beff0dcc4be565b:samples/sample-bakery-receipts/receipts.json:generic-api-key:128
