@@ -30,12 +30,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from sovereign_matrix.verifiable_receipts import (
     VerifyResult,
+    ed25519_public_key_problem,
     sign_v2_receipt,
-    verify_ed25519,
     verify_v2_receipt,
 )
 
@@ -46,10 +47,6 @@ from .names import check_slug
 PRIVATE_KEY_FILE = "ed25519-private.pem"
 # The receipts spec publishes the public key as /.well-known/sovereign-receipts/ed25519.pem.
 PUBLIC_KEY_FILE = "ed25519.pem"
-# verify_ed25519 checks the key before the signature, so under a key it refuses it gives the
-# key's reason (each begins "public key") whatever the signature is. This one never verifies:
-# its R, all zeros, is a point of small order.
-_KEY_PROBE_SIGNATURE = bytes(64)
 
 
 class KeyFileError(Exception):
@@ -71,17 +68,19 @@ def public_key_problem(public_key_pem: bytes) -> str | None:
 
     The reasons are the verifiers' own (VAOS 2.0 section 7.3), such as "public key is not in
     the prime-order subgroup" for a key of mixed order. A key made by ``new_keys`` is always
-    accepted.
+    accepted. Any reason the verifiers give refuses the key.
     """
     try:
         key = serialization.load_pem_public_key(public_key_pem)
+    except UnsupportedAlgorithm:
+        # A key on a curve cryptography does not support, such as secp112r1.
+        return "not an Ed25519 public key"
     except ValueError:
         return "not a PEM public key"
     if not isinstance(key, Ed25519PublicKey):
         return "not an Ed25519 public key"
     raw = key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-    reason = verify_ed25519(raw, b"", _KEY_PROBE_SIGNATURE).reason or ""
-    return reason if reason.startswith("public key") else None
+    return ed25519_public_key_problem(raw)
 
 
 def _check_public_key(path: Path, public_key_pem: bytes) -> None:
