@@ -15,8 +15,10 @@ the same in Python, Go and JavaScript.
 
 What it refuses: a float anywhere in a receipt; writing a private key inside a git work tree;
 overwriting a private key; loading a private key that others can read, that is not Ed25519,
-or whose public key file does not match. The private key is written once with mode 0600 and
-is never printed, logged or put in a receipt.
+or whose public key file does not match; loading a public key the receipts verifiers refuse
+(VAOS 2.0 section 7.3: a point of small or mixed order, off the curve, or a non-canonical
+encoding), since every receipt under such a key is rejected. The private key is written once
+with mode 0600 and is never printed, logged or put in a receipt.
 """
 
 from __future__ import annotations
@@ -29,8 +31,13 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from sovereign_matrix.verifiable_receipts import VerifyResult, sign_v2_receipt, verify_v2_receipt
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from sovereign_matrix.verifiable_receipts import (
+    VerifyResult,
+    sign_v2_receipt,
+    verify_ed25519,
+    verify_v2_receipt,
+)
 
 from .clock import iso
 from .ledger import Ledger, ReceiptKind, new_id
@@ -39,6 +46,10 @@ from .names import check_slug
 PRIVATE_KEY_FILE = "ed25519-private.pem"
 # The receipts spec publishes the public key as /.well-known/sovereign-receipts/ed25519.pem.
 PUBLIC_KEY_FILE = "ed25519.pem"
+# verify_ed25519 checks the key before the signature, so under a key it refuses it gives the
+# key's reason (each begins "public key") whatever the signature is. This one never verifies:
+# its R, all zeros, is a point of small order.
+_KEY_PROBE_SIGNATURE = bytes(64)
 
 
 class KeyFileError(Exception):
@@ -53,6 +64,33 @@ def public_pem(key: Ed25519PrivateKey) -> bytes:
     return key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
     )
+
+
+def public_key_problem(public_key_pem: bytes) -> str | None:
+    """Why the receipts verifiers refuse this PEM public key, or None when they accept it.
+
+    The reasons are the verifiers' own (VAOS 2.0 section 7.3), such as "public key is not in
+    the prime-order subgroup" for a key of mixed order. A key made by ``new_keys`` is always
+    accepted.
+    """
+    try:
+        key = serialization.load_pem_public_key(public_key_pem)
+    except ValueError:
+        return "not a PEM public key"
+    if not isinstance(key, Ed25519PublicKey):
+        return "not an Ed25519 public key"
+    raw = key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    reason = verify_ed25519(raw, b"", _KEY_PROBE_SIGNATURE).reason or ""
+    return reason if reason.startswith("public key") else None
+
+
+def _check_public_key(path: Path, public_key_pem: bytes) -> None:
+    problem = public_key_problem(public_key_pem)
+    if problem is not None:
+        raise KeyFileError(
+            f"{path} is refused: {problem}; every receipt under it would be rejected, "
+            "so make a new key pair with new_keys()"
+        )
 
 
 def new_keys(keys_dir: Path) -> Path:
@@ -108,6 +146,8 @@ def load_signer(business: str, keys_dir: Path) -> Signer:
     public_path = keys_dir / PUBLIC_KEY_FILE
     if public_path.exists() and public_path.read_bytes() != public:
         raise KeyFileError(f"{public_path} does not match the private key")
+    # The public key of an Ed25519 private key is always of order L; checked all the same.
+    _check_public_key(private_path, public)
     return Signer(business, key, public)
 
 
@@ -115,7 +155,9 @@ def load_public_pem(keys_dir: Path) -> bytes:
     public_path = keys_dir / PUBLIC_KEY_FILE
     if not public_path.is_file():
         raise KeyFileError(f"no public key at {public_path}")
-    return public_path.read_bytes()
+    public = public_path.read_bytes()
+    _check_public_key(public_path, public)
+    return public
 
 
 def sign_receipt(

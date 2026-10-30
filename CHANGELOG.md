@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- verifiable-receipts moves to commit f41348e (its Python package 0.3.0), in the package and in the Go verifier the
+  tests check receipts with. Its verifiers follow the strict Ed25519 profile of VAOS 2.0 section 7.3: they refuse a
+  key or an `R` that is not a canonical encoding of a point of order L, a key of mixed order included, and an `S` of
+  L or more. Receipts the kit signs pass it in Python, Go and JavaScript.
+- `load_public_pem` and `load_signer` refuse a public key those verifiers refuse, with their reason, and
+  `public_key_problem` gives that reason for any PEM public key. A key `new_keys` makes is never refused.
+
 ## 0.1.0
 
 The first release: the kit and its first job, supplier inbox + reorders, on the sample bakery.

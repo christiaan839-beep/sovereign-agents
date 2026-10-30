@@ -10,7 +10,7 @@ dependencies = [
     "claude-agent-sdk==0.2.168",
     "cryptography==50.0.2",
     "jsonschema==4.26.0",
-    "sovereign-matrix-verifiable-receipts @ git+https://github.com/christiaan839-beep/verifiable-receipts@24f5c4780dba7c4f76b159b7f7844e17d0226cd6#subdirectory=packages/verifiable-receipts-py",
+    "sovereign-matrix-verifiable-receipts @ git+https://github.com/christiaan839-beep/verifiable-receipts@f41348eac297c81e1c2a0dca91b7bd49dd2a5d9a#subdirectory=packages/verifiable-receipts-py",
 ]
 
 [project.scripts]

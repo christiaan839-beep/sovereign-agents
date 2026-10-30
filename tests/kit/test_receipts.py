@@ -23,6 +23,7 @@ from sovereign_agents.kit.receipts import (
     load_public_pem,
     load_signer,
     new_keys,
+    public_key_problem,
     verify,
     verify_all,
 )
@@ -34,6 +35,12 @@ from sovereign_agents.kit.testing import (
 )
 
 T0 = datetime(2026, 10, 16, 8, 0, tzinfo=UTC)
+# Copied unchanged from verifiable-receipts at f41348e (packages/verifiable-receipts/conformance/
+# fixtures): each a receipt under a key of mixed order, a point of order L plus one of small
+# order, which the strict profile of VAOS 2.0 section 7.3 refuses.
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+MIXED_ORDER_KEYS = sorted(FIXTURES.glob("ed25519-key-mixed-order-*.json"))
+NOT_IN_SUBGROUP = "public key is not in the prime-order subgroup"
 
 
 def test_new_keys_writes_a_private_key_only_its_owner_can_read(tmp_path: Path) -> None:
@@ -368,3 +375,65 @@ def test_the_ledger_check_needs_a_key_each_receipt_verifies_under(tmp_path: Path
     assert_ledger_receipts_valid(tmp_path / "ledger.sqlite3", [other, signer.public_pem])
     with pytest.raises(AssertionError, match="verifies under none of the 1 public key"):
         assert_ledger_receipts_valid(tmp_path / "ledger.sqlite3", [other])
+
+
+def test_the_mixed_order_fixtures_are_there() -> None:
+    assert [path.stem for path in MIXED_ORDER_KEYS] == [
+        "ed25519-key-mixed-order-2-k0",
+        "ed25519-key-mixed-order-4",
+        "ed25519-key-mixed-order-8-k0",
+        "ed25519-key-mixed-order-8",
+    ]
+
+
+@pytest.mark.parametrize("fixture", MIXED_ORDER_KEYS, ids=lambda path: path.stem)
+def test_a_mixed_order_issuer_key_is_refused_where_it_is_loaded(
+    tmp_path: Path, fixture: Path
+) -> None:
+    vector = json.loads(fixture.read_text("utf-8"))
+    public_pem = vector["publicKeyPem"].encode("ascii")
+    assert public_key_problem(public_pem) == NOT_IN_SUBGROUP
+    (tmp_path / PUBLIC_KEY_FILE).write_bytes(public_pem)
+    with pytest.raises(KeyFileError) as refused:
+        load_public_pem(tmp_path)
+    message = str(refused.value)
+    assert str(tmp_path / PUBLIC_KEY_FILE) in message
+    assert NOT_IN_SUBGROUP in message
+    assert "make a new key pair" in message
+    # Its receipt is rejected with the same reason by both verifiers.
+    assert vector["expected"] == {"ok": False, "reasonContains": NOT_IN_SUBGROUP}
+    assert_receipt_rejected(vector["receipt"], public_pem, NOT_IN_SUBGROUP)
+
+
+def test_a_small_order_issuer_key_is_refused_where_it_is_loaded(tmp_path: Path) -> None:
+    identity = bytes([1]) + bytes(31)
+    (tmp_path / PUBLIC_KEY_FILE).write_bytes(
+        Ed25519PublicKey.from_public_bytes(identity).public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    with pytest.raises(KeyFileError, match="is refused: public key is a small-order point"):
+        load_public_pem(tmp_path)
+
+
+def test_a_public_key_file_that_is_not_an_ed25519_key_is_refused(tmp_path: Path) -> None:
+    (tmp_path / PUBLIC_KEY_FILE).write_bytes(b"not a key")
+    with pytest.raises(KeyFileError, match="is refused: not a PEM public key"):
+        load_public_pem(tmp_path)
+    other = ec.generate_private_key(ec.SECP256R1()).public_key()
+    (tmp_path / PUBLIC_KEY_FILE).write_bytes(
+        other.public_bytes(
+            serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+    )
+    with pytest.raises(KeyFileError, match="is refused: not an Ed25519 public key"):
+        load_public_pem(tmp_path)
+
+
+def test_every_key_the_kit_makes_passes_the_strict_rule(tmp_path: Path) -> None:
+    for n in range(32):
+        keys_dir = tmp_path / f"k{n}"
+        public = new_keys(keys_dir).read_bytes()
+        assert public_key_problem(public) is None
+        assert load_public_pem(keys_dir) == public
+        assert load_signer("example-shop", keys_dir).public_pem == public
