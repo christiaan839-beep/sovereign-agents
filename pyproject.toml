@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "third_party/commerce-agents/LICENSE"]
 dependencies = [
-    "claude-agent-sdk==0.2.168",
+    "claude-agent-sdk==0.2.173",
     "cryptography==50.0.2",
     "jsonschema==4.26.0",
     "sovereign-matrix-verifiable-receipts @ git+https://github.com/christiaan839-beep/verifiable-receipts@4d9943a99376527f742dcfdf93652ed040a51b43#subdirectory=packages/verifiable-receipts-py",
