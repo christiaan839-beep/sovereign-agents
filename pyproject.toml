@@ -18,11 +18,11 @@ sovereign-agents = "sovereign_agents.cli:main"
 
 [dependency-groups]
 dev = [
-    "coverage==7.16.2",
+    "coverage==7.17.0",
     "mypy==2.4.0",
     "pytest==9.1.1",
     "pytest-cov==7.1.0",
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "types-jsonschema==4.26.0.20261006",
 ]
 
