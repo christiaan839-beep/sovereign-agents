@@ -63,7 +63,12 @@ STAGE_REORDER_SCHEMA: dict[str, Any] = {
                 "type": "object",
                 "properties": {
                     "sku": {"type": "string", "description": "A sku from get_stock_levels."},
-                    "quantity": {"type": "integer", "minimum": 1},
+                    "quantity": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Units to order: enough to bring the sku back above its "
+                        "reorder point, and at least the supplier's stated minimum.",
+                    },
                     "unit_price_cents": {
                         "type": "integer",
                         "minimum": 0,
